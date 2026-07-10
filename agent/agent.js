@@ -2,9 +2,10 @@ const http = require('http');
 const os = require('os');
 const { execSync } = require('child_process');
 
-const REGISTRY_URL = process.env.REGISTRY_URL || 'http://127.0.0.1:3000';
+const REGISTRY_URL = process.env.REGISTRY_URL || 'http://127.0.0.1:3001';
 const SERVER_ID = process.env.SERVER_ID;
-const INTERVAL = parseInt(process.env.INTERVAL) || 60; // seconds
+const API_KEY = process.env.AGENT_API_KEY || process.env.JWT_SECRET;
+const INTERVAL = parseInt(process.env.INTERVAL) || 30; // seconds
 
 if (!SERVER_ID) {
   console.error('SERVER_ID environment variable required');
@@ -57,14 +58,15 @@ function getResourceUsage() {
 function sendHeartbeat() {
   const usage = getResourceUsage();
 
-  const data = JSON.stringify({
-    ...usage,
-    current_tenants: 0, // will be updated from registry
-  });
+  const data = JSON.stringify({ ...usage });
 
   const req = http.request(`${REGISTRY_URL}/api/servers/${SERVER_ID}/heartbeat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data),
+      'x-api-key': API_KEY || '',
+    },
   }, (res) => {
     let body = '';
     res.on('data', (chunk) => body += chunk);
