@@ -4,6 +4,99 @@ const db = require('../config/database');
 const { provisionServer, drainServer, migrateTenant } = require('../services/provisioner');
 const { superadminAuth } = require('../services/auth');
 
+// SSE auth middleware — accepts token from query param (EventSource limitation)
+const sseAuth = (req, res, next) => {
+  const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).end();
+  try {
+    const jwt = require('jsonwebtoken');
+    const { getSecret } = require('../services/auth');
+    const decoded = jwt.verify(token, getSecret());
+    if (decoded.role !== 'superadmin') return res.status(403).end();
+    req.user = decoded;
+    next();
+  } catch { res.status(401).end(); }
+};
+
+// GET /api/servers/stream — SSE realtime server stats
+// Must be before /:id to avoid route conflict
+router.get('/stream', sseAuth, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx/caddy buffering
+  res.flushHeaders();
+
+  const send = async () => {
+    try {
+      const [servers] = await db.query(`
+        SELECT s.*,
+          COUNT(t.id) AS tenant_count,
+          TIMESTAMPDIFF(SECOND, s.last_heartbeat, NOW()) AS seconds_since_hb
+        FROM servers s
+        LEFT JOIN tenants t ON t.server_id = s.id AND t.status NOT IN ('inactive','failed')
+        GROUP BY s.id
+        ORDER BY s.created_at ASC
+      `);
+
+      // Enrich with live ping for each active server
+      const enriched = await Promise.all(servers.map(async (s) => {
+        let ping_ms = null;
+        if (s.status === 'active' && s.ip_address) {
+          const start = Date.now();
+          try {
+            const http = require('http');
+            await new Promise((resolve, reject) => {
+              const req = http.get(
+                `http://${s.ip_address}:${s.ssh_port || 22}`,
+                { timeout: 2000 },
+                resolve
+              );
+              req.on('error', resolve); // TCP connect/refuse = server reachable
+              req.on('timeout', reject);
+              setTimeout(resolve, 2000); // max 2s
+            });
+            ping_ms = Date.now() - start;
+          } catch { ping_ms = null; }
+        }
+
+        return {
+          id: s.id,
+          hostname: s.hostname,
+          ip_address: s.ip_address,
+          status: s.status,
+          region: s.region,
+          docker_version: s.docker_version,
+          total_ram_mb: s.total_ram_mb,
+          used_ram_mb: s.used_ram_mb,
+          total_cpu_cores: s.total_cpu_cores,
+          used_cpu_cores: s.used_cpu_cores,
+          total_disk_mb: s.total_disk_mb,
+          used_disk_mb: s.used_disk_mb,
+          max_tenants: s.max_tenants,
+          current_tenants: parseInt(s.tenant_count || 0),
+          last_heartbeat: s.last_heartbeat,
+          seconds_since_hb: s.seconds_since_hb,
+          ping_ms,
+          online: s.seconds_since_hb !== null && s.seconds_since_hb < 120,
+        };
+      }));
+
+      res.write(`data: ${JSON.stringify({ servers: enriched, ts: Date.now() })}\n\n`);
+    } catch (e) {
+      res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+    }
+  };
+
+  // Send immediately then every 5 seconds
+  send();
+  const interval = setInterval(send, 5000);
+
+  // Cleanup on disconnect
+  req.on('close', () => clearInterval(interval));
+  res.on('close', () => clearInterval(interval));
+});
+
 // GET /api/servers — list all servers
 router.get('/', superadminAuth, async (req, res) => {
   try {
