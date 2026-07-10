@@ -1,13 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const queue = require('../services/queue');
-
-const superadminAuth = (req, res, next) => {
-  req.authenticate(req, res, () => {
-    if (req.user?.role !== 'superadmin') return res.status(403).json({ error: 'Superadmin only' });
-    next();
-  });
-};
+const { superadminAuth } = require('../services/auth');
 
 // GET /api/queue/stats
 router.get('/stats', superadminAuth, async (req, res) => {
