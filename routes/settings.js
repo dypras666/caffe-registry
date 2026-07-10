@@ -149,4 +149,88 @@ router.post('/templates/reset', superadminAuth, async (req, res) => {
   }
 });
 
+// ==================== SMTP PROVIDERS ====================
+
+// GET /api/settings/smtp/providers — list all SMTP providers
+router.get('/smtp/providers', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'smtp_providers'");
+    const providers = rows.length && rows[0].setting_value ? JSON.parse(rows[0].setting_value) : [];
+    res.json({ providers });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/settings/smtp/providers — replace all providers
+router.put('/smtp/providers', superadminAuth, async (req, res) => {
+  try {
+    const { providers } = req.body;
+    if (!Array.isArray(providers) || !providers.length) {
+      return res.status(400).json({ error: 'providers wajib array dengan minimal 1 provider' });
+    }
+    for (const p of providers) {
+      if (!p.host || !p.user || !p.pass) {
+        return res.status(400).json({ error: `Provider "${p.name || '?'}" — host, user, dan pass wajib diisi` });
+      }
+    }
+    await db.query(
+      "INSERT INTO system_settings (setting_key, setting_value, description) VALUES ('smtp_providers', ?, 'JSON array of SMTP providers') ON DUPLICATE KEY UPDATE setting_value = ?",
+      [JSON.stringify(providers), JSON.stringify(providers)]
+    );
+    res.json({ success: true, count: providers.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/settings/smtp/test — test a specific provider or all providers
+router.post('/smtp/test', superadminAuth, async (req, res) => {
+  try {
+    const { to, provider } = req.body;
+    if (!to) return res.status(400).json({ error: 'Email tujuan wajib diisi' });
+
+    const nodemailer = require('nodemailer');
+
+    if (provider) {
+      // Test single provider
+      const transporter = nodemailer.createTransport({
+        host: provider.host,
+        port: provider.port || 465,
+        secure: (provider.port || 465) === 465,
+        auth: { user: provider.user, pass: provider.pass },
+      });
+      await transporter.sendMail({
+        from: `"Cafe Azzura" <${provider.from || 'noreply@cafeazzura.com'}>`,
+        to,
+        subject: `[TEST SMTP] ${provider.name || provider.host}`,
+        html: '<p>Test email dari Cafe Azzura</p>',
+      });
+      return res.json({ success: true, provider: provider.name || provider.host });
+    }
+
+    // Test all providers from DB
+    const { sendMail } = require('../services/email');
+    const result = await sendMail({
+      to,
+      subject: '[TEST] SMTP Combo Cafe Azzura',
+      template: 'welcome.html',
+      vars: {
+        name: 'Test Combo',
+        slug: 'test-cafe',
+        email: 'admin@test.com',
+        password: 'TestPass123',
+        plan: 'Gratis',
+        adminUrl: 'https://office-test.caffe.my.id/admin',
+        resetUrl: 'https://office-test.caffe.my.id/admin/reset?token=test123',
+        cafeName: 'Cafe Azzura',
+        role: 'Superadmin',
+      },
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

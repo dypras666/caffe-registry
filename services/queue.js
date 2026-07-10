@@ -206,6 +206,7 @@ async function retryFailed() {
 
 module.exports = {
   ensureTable, enqueue, register,
+  processBatch, // exported for unit testing
   startWorker, stopWorker,
   scheduleRecurring,
   getStats, getHistory, retryFailed,

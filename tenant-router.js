@@ -128,6 +128,14 @@ app.use('/', (req, res) => {
     basePath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'admin');
     urlPath = urlPath.replace('/admin', '') || '/';
   } else {
+    // Check admin assets too (admin index.html references /assets/...)
+    const adminAssetPath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'admin', urlPath.replace(/^\//, ''));
+    if (fs.existsSync(adminAssetPath) && fs.statSync(adminAssetPath).isFile()) {
+      const mimeType = getMimeType(adminAssetPath);
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      return res.sendFile(adminAssetPath);
+    }
     basePath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'ui');
   }
   

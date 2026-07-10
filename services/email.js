@@ -8,7 +8,6 @@ const cache = {};
 async function loadTemplate(name) {
   if (cache[name]) return cache[name];
 
-  // Try DB first
   try {
     const db = require('../config/database');
     const [rows] = await db.query('SELECT html FROM system_templates WHERE name = ?', [name]);
@@ -18,7 +17,6 @@ async function loadTemplate(name) {
     }
   } catch (_) {}
 
-  // Fallback to file
   try {
     const filePath = path.join(TEMPLATES_DIR, name);
     cache[name] = fs.readFileSync(filePath, 'utf8');
@@ -41,54 +39,89 @@ function renderTemplate(html, vars) {
   let result = html;
   for (const [key, value] of Object.entries(vars)) {
     const replaced = value !== undefined && value !== null ? String(value) : '';
-    // {{{var}}} = raw (unescaped), {{var}} = auto-escaped
     result = result.replace(new RegExp(`\\{\\{\\{\\s*${key}\\s*\\}\\}\\}`, 'g'), replaced);
     result = result.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'), escapeHtml(replaced));
   }
   return result;
 }
 
-async function getTransporter() {
-  const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT) || 465;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-
+function createTransporter(provider) {
   return nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    auth: { user, pass },
+    host: provider.host,
+    port: provider.port || 465,
+    secure: (provider.port || 465) === 465,
+    auth: { user: provider.user, pass: provider.pass },
   });
 }
 
-async function sendMail({ to, subject, template, vars, from }) {
-  const smtpUser = process.env.SMTP_USER;
-  if (!smtpUser) {
-    console.log(`[Email] SKIP (no SMTP): ${subject} → ${to}`);
-    return { skipped: true };
+async function loadProviders() {
+  // Priority: SMTP_PROVIDERS env → DB smtp_providers → legacy SMTP_* env
+  const envProviders = process.env.SMTP_PROVIDERS;
+  if (envProviders) {
+    try { const p = JSON.parse(envProviders); if (Array.isArray(p) && p.length) return p; } catch (_) {}
   }
 
-  let fromAddr = from || process.env.SMTP_FROM;
   try {
     const db = require('../config/database');
-    const [rows] = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'smtp_from'");
-    if (rows.length && rows[0].setting_value) fromAddr = rows[0].setting_value;
+    const [rows] = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'smtp_providers'");
+    if (rows.length && rows[0].setting_value) {
+      const parsed = JSON.parse(rows[0].setting_value);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    }
   } catch (_) {}
-  if (!fromAddr) fromAddr = 'noreply@cafeazzura.com';
+
+  // Legacy fallback: one provider from env vars
+  if (process.env.SMTP_USER) {
+    return [{
+      name: process.env.SMTP_PROVIDER || 'SMTP',
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT) || 465,
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+      from: process.env.SMTP_FROM,
+    }];
+  }
+
+  return [];
+}
+
+async function sendMail({ to, subject, template, vars, from }) {
+  const providers = await loadProviders();
+
+  if (!providers.length) {
+    console.log(`[Email] SKIP (no provider): ${subject} → ${to}`);
+    return { skipped: true, reason: 'no provider' };
+  }
+
+  // Try env-level override for from address
+  let fromAddr = from || process.env.SMTP_FROM;
+  if (!fromAddr) {
+    fromAddr = providers[0].from || 'noreply@cafeazzura.com';
+  }
 
   const html = renderTemplate(await loadTemplate(template), vars);
-  const transporter = await getTransporter();
-
-  await transporter.sendMail({
+  const mailOpts = {
     from: `"Cafe Azzura" <${fromAddr}>`,
     to,
     subject,
     html,
-  });
+  };
 
-  console.log(`[Email] SENT: ${subject} → ${to}`);
-  return { sent: true };
+  // Sort by priority (ascending), then try each in order
+  const sorted = [...providers].sort((a, b) => (a.priority || 99) - (b.priority || 99));
+
+  for (const provider of sorted) {
+    try {
+      const transporter = createTransporter(provider);
+      await transporter.sendMail(mailOpts);
+      console.log(`[Email] SENT via ${provider.name || provider.host}: ${subject} → ${to}`);
+      return { sent: true, provider: provider.name || provider.host };
+    } catch (err) {
+      console.warn(`[Email] FAILED ${provider.name || provider.host}: ${err.message}`);
+    }
+  }
+
+  throw new Error(`Semua SMTP provider gagal untuk "${subject}" → ${to}`);
 }
 
 async function sendWelcome({ to, name, adminUrl, email, password, plan }) {
