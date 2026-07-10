@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px}.wrap{max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}.header{background:linear-gradient(135deg,#10b981,#059669);padding:32px 24px;text-align:center}.header h1{color:#fff;margin:0;font-size:22px}.amount-box{background:#f0fdf4;border:2px solid #10b981;border-radius:8px;padding:20px;text-align:center;margin:24px}.amount-box .label{font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}.amount-box .value{font-size:28px;font-weight:700;color:#059669;margin:4px 0}.body{padding:24px}.info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:14px}.info-row span:first-child{color:#6b7280}.info-row span:last-child{font-weight:600}.footer{background:#f9fafb;padding:16px 24px;text-align:center;font-size:12px;color:#9ca3af}</style>
+</head><body>
+<div class="wrap">
+  <div class="header"><h1>✅ Topup Berhasil!</h1></div>
+  <div class="body">
+    <p>Halo <strong>{{name}}</strong>,</p>
+    <p>Topup saldo untuk akun <strong>{{slug}}</strong> Anda telah berhasil diproses.</p>
+    <div class="amount-box">
+      <div class="label">Jumlah Topup</div>
+      <div class="value">{{amount}}</div>
+    </div>
+    <div class="info-row"><span>Saldo Sekarang</span><span>{{balance}}</span></div>
+    <div class="info-row"><span>Tanggal</span><span>{{date}}</span></div>
+    <div class="info-row"><span>Cafe</span><span>{{slug}}</span></div>
+    <p style="margin-top:20px;font-size:14px;color:#6b7280">Terima kasih telah melakukan topup. Layanan Anda akan terus berjalan selama saldo mencukupi.</p>
+  </div>
+  <div class="footer">© Cafe Azzura Registry — Jangan balas email ini</div>
+</div>
+</body></html>

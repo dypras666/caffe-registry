@@ -1,0 +1,31 @@
+{
+	email admin@caffe.my.id
+}
+
+caffe.my.id {
+	reverse_proxy localhost:3000
+}
+
+greister.caffe.my.id {
+	handle /api/* {
+		reverse_proxy localhost:3100
+	}
+	handle /admin/* {
+		reverse_proxy localhost:3101
+	}
+	handle {
+		reverse_proxy localhost:3102
+	}
+}
+
+*.caffe.my.id {
+	handle /admin/* {
+		reverse_proxy localhost:3001
+	}
+	handle /api/* {
+		reverse_proxy localhost:3001
+	}
+	handle {
+		reverse_proxy localhost:3001
+	}
+}

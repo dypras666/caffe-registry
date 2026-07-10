@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px}.wrap{max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}.header{background:linear-gradient(135deg,#f59e0b,#d97706);padding:32px 24px;text-align:center}.header h1{color:#fff;margin:0;font-size:22px}.body{padding:24px}.days-box{background:#fffbeb;border:2px solid #f59e0b;border-radius:8px;padding:20px;text-align:center;margin:20px 0}.days-box .big{font-size:48px;font-weight:900;color:#d97706}.days-box .label{font-size:14px;color:#92400e;margin-top:4px}.btn{display:inline-block;background:#d97706;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;margin-top:20px}.footer{background:#f9fafb;padding:16px 24px;text-align:center;font-size:12px;color:#9ca3af}</style>
+</head><body>
+<div class="wrap">
+  <div class="header"><h1>⏰ Langganan Hampir Berakhir</h1></div>
+  <div class="body">
+    <p>Halo <strong>{{name}}</strong>,</p>
+    <p>Langganan Anda untuk cafe <strong>{{slug}}</strong> akan berakhir pada:</p>
+    <p style="font-size:18px;font-weight:700;color:#d97706">{{expiryDate}}</p>
+    <div class="days-box">
+      <div class="big">{{daysLeft}}</div>
+      <div class="label">hari lagi</div>
+    </div>
+    <p>Segera perpanjang langganan Anda agar layanan tidak terganggu.</p>
+    <div style="text-align:center">
+      <a href="{{renewUrl}}" class="btn">Perpanjang Sekarang</a>
+    </div>
+  </div>
+  <div class="footer">© Cafe Azzura Registry — Jangan balas email ini</div>
+</div>
+</body></html>

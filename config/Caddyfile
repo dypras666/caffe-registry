@@ -1,0 +1,72 @@
+{
+	email admin@caffe.my.id
+}
+
+# Registry / Landing
+caffe.my.id {
+	reverse_proxy localhost:3000
+}
+
+# Superadmin
+admin.caffe.my.id {
+	reverse_proxy localhost:3002
+}
+
+# Tenant routes - office subdomain for admin, main subdomain for customer UI
+office-*.caffe.my.id {
+	@api {
+		path /api/*
+	}
+	@static {
+		path /admin/* /assets/* /_next/*
+	}
+	handle @api {
+		uri strip_prefix /api
+		reverse_proxy localhost:3001
+	}
+	handle @static {
+		root * /var/www/office-{args[0]}
+		file_server
+		try_files {path} /index.html
+	}
+	handle {
+		root * /var/www/office-{args[0]}
+		file_server
+		try_files {path} /index.html
+	}
+}
+
+# API subdomain
+api-*.caffe.my.id {
+	reverse_proxy localhost:3001
+}
+
+# Customer landing / UI - catchall for tenant subdomains
+*.caffe.my.id {
+	@office {
+		header X-Tenant-Type office
+	}
+	@api {
+		path /api/*
+	}
+	handle @api {
+		uri strip_prefix /api
+		reverse_proxy localhost:3001
+	}
+	handle {
+		reverse_proxy localhost:3001
+	}
+}
+
+# Legacy routes - redirect
+greister.caffe.my.id {
+	redir https://office-greister.caffe.my.id{uri}
+}
+
+testcafe2.caffe.my.id {
+	redir https://office-testcafe2.caffe.my.id{uri}
+}
+
+nusantara2024.caffe.my.id {
+	redir https://office-nusantara2024.caffe.my.id{uri}
+}

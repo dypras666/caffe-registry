@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cafe Admin</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            border: 'hsl(var(--border))',
+            background: 'hsl(var(--background))',
+            foreground: 'hsl(var(--foreground))',
+            primary: { DEFAULT: 'hsl(var(--primary))', foreground: 'hsl(var(--primary-foreground))' },
+            card: { DEFAULT: 'hsl(var(--card))', foreground: 'hsl(var(--card-foreground))' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --background: 20 14% 4%;
+      --foreground: 60 9% 98%;
+      --card: 20 14% 6%;
+      --card-foreground: 60 9% 98%;
+      --primary: 25 95% 53%;
+      --primary-foreground: 60 9% 98%;
+      --border: 20 14% 12%;
+      --radius: 0.5rem;
+    }
+    * { border-color: hsl(var(--border)); }
+    body { background: hsl(var(--background)); color: hsl(var(--foreground)); }
+    .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-spin-slow { animation: spin 3s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useCallback, createContext, useContext } = React;
+
+    // ============ UTILITIES ============
+    // Detect if this is a superadmin session (URL contains /superadmin)
+    const isSuperAdmin = window.location.pathname.includes('/superadmin');
+    const API_BASE = isSuperAdmin ? 'https://caffe.my.id' : window.location.origin;
+
+    const api = {
+      async get(endpoint) {
+        const res = await fetch(`${API_BASE}/api${endpoint}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      },
+      async post(endpoint, data) {
+        const res = await fetch(`${API_BASE}/api${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          body: JSON.stringify(data)
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Request failed');
+        return json;
+      }
+    };
+
+    const formatCurrency = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+    const formatDate = (date) => new Date(date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+
+    // ============ AUTH CONTEXT ============
+    const AuthContext = createContext(null);
+
+    const useAuth = () => useContext(AuthContext);
+
+    const AuthProvider = ({ children }) => {
+      const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('user') || 'null'));
+      const [loading, setLoading] = useState(false);
+
+      const login = async (email, password, type = 'tenant') => {
+        setLoading(true);
+        try {
+          const endpoint = type === 'superadmin' ? '/superadmin/login' : '/auth/login';
+          const res = await api.post(endpoint, { email, password });
+          localStorage.setItem('token', res.token);
+          localStorage.setItem('user', JSON.stringify(res.user));
+          localStorage.setItem('userType', type);
+          setUser(res.user);
+          return res;
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const logout = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+      };
+
+      return (
+        <AuthContext.Provider value={{ user, login, logout, loading }}>
+          {children}
+        </AuthContext.Provider>
+      );
+    };
+
+    // ============ UI COMPONENTS ============
+    const Button = ({ children, variant = 'default', size = 'default', className = '', ...props }) => {
+      const variants = {
+        default: 'bg-primary text-primary-foreground hover:opacity-90',
+        outline: 'border border-border bg-transparent hover:bg-card',
+        ghost: 'hover:bg-card',
+        link: 'text-primary underline-offset-4 hover:underline'
+      };
+      const sizes = { default: 'h-10 px-4 py-2', sm: 'h-8 px-3 text-sm', lg: 'h-12 px-8', icon: 'h-10 w-10' };
+      return (
+        <button className={`inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`} {...props}>
+          {children}
+        </button>
+      );
+    };
+
+    const Input = ({ className = '', ...props }) => (
+      <input className={`flex h-10 w-full rounded-md border border-border bg-card px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${className}`} {...props} />
+    );
+
+    const Card = ({ children, className = '' }) => (
+      <div className={`rounded-lg border border-border bg-card text-card-foreground shadow-sm ${className}`}>{children}</div>
+    );
+
+    const CardHeader = ({ children }) => <div className="flex flex-col space-y-1.5 p-6">{children}</div>;
+    const CardTitle = ({ children }) => <h3 className="text-2xl font-semibold leading-none tracking-tight">{children}</h3>;
+    const CardDescription = ({ children }) => <p className="text-sm text-muted-foreground">{children}</p>;
+    const CardContent = ({ children }) => <div className="p-6 pt-0">{children}</div>;
+
+    const Badge = ({ children, variant = 'default' }) => {
+      const variants = { default: 'bg-primary/10 text-primary', success: 'bg-green-500/10 text-green-500', warning: 'bg-yellow-500/10 text-yellow-500' };
+      return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${variants[variant]}`}>{children}</span>;
+    };
+
+    const StatCard = ({ title, value, icon, description, color = 'text-primary' }) => (
+      <Card className="animate-fade-in">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">{title}</p>
+              <p className={`text-3xl font-bold ${color}`}>{value}</p>
+              {description && <p className="text-xs text-muted-foreground mt-1">{description}</p>}
+            </div>
+            {icon && <div className={`text-4xl opacity-20 ${color}`}>{icon}</div>}
+          </div>
+        </CardContent>
+      </Card>
+    );
+
+    // ============ PAGES ============
+    
+    // Login Page
+    const LoginPage = () => {
+      const { login, loading } = useAuth();
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState('');
+      const [isSuper, setIsSuper] = useState(isSuperAdmin);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        try {
+          await login(email, password, isSuper ? 'superadmin' : 'tenant');
+        } catch (err) {
+          setError(err.message);
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <Card className="w-full max-w-md animate-fade-in">
+            <CardHeader className="text-center">
+              <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4">
+                <span className="text-3xl">{isSuper ? '⚙️' : '☕'}</span>
+              </div>
+              <CardTitle>{isSuper ? 'Superadmin Login' : 'Masuk Admin'}</CardTitle>
+              <CardDescription>{isSuper ? 'Kelola semua tenant' : 'Kelola Cafe Anda'}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                {error && <div className="p-3 rounded-md bg-red-500/10 text-red-500 text-sm">{error}</div>}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Email</label>
+                  <Input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@cafe.com" required />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Password</label>
+                  <Input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required />
+                </div>
+                <Button type="submit" className="w-full" disabled={loading}>
+                  {loading ? 'Memuat...' : 'Masuk'}
+                </Button>
+                {!isSuper && (
+                  <div className="text-center">
+                    <a href="/forgot-password" className="text-sm text-primary hover:underline">Lupa password?</a>
+                  </div>
+                )}
+                <div className="text-center pt-2">
+                  <button type="button" className="text-xs text-muted-foreground hover:text-primary" onClick={() => setIsSuper(!isSuper)}>
+                    {isSuper ? 'Login sebagai Tenant' : 'Login sebagai Superadmin'}
+                  </button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    };
+
+    // Forgot Password Page
+    const ForgotPasswordPage = () => {
+      const [email, setEmail] = useState('');
+      const [sent, setSent] = useState(false);
+      const [loading, setLoading] = useState(false);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+          await fetch(`${API_BASE}/api/auth/forgot`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email })
+          });
+          setSent(true);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <Card className="w-full max-w-md animate-fade-in">
+            <CardHeader className="text-center">
+              <CardTitle>Reset Password</CardTitle>
+              <CardDescription>Masukkan email untuk receive link reset</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {sent ? (
+                <div className="text-center space-y-4">
+                  <div className="text-5xl">📧</div>
+                  <p className="text-muted-foreground">Jika email terdaftar, link reset sudah dikirim.</p>
+                  <Button variant="outline" onClick={() => window.location.href = '/admin'} className="w-full">Kembali ke Login</Button>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Email</label>
+                    <Input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@cafe.com" required />
+                  </div>
+                  <Button type="submit" className="w-full" disabled={loading}>
+                    {loading ? 'Mengirim...' : 'Kirim Link Reset'}
+                  </Button>
+                </form>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      );
+    };
+
+    // Dashboard Page
+    const DashboardPage = () => {
+      const [stats, setStats] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        api.get('/dashboard/stats').then(setStats).catch(console.error).finally(() => setLoading(false));
+      }, []);
+
+      if (loading) return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div></div>;
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <div className="flex items-center justify-between">
+            <h1 className="text-3xl font-bold">Dashboard</h1>
+            <Badge variant="success">Online</Badge>
+          </div>
+          
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <StatCard title="Total Penjualan" value={formatCurrency(stats?.revenue_today || 0)} description="Hari ini" icon="💰" color="text-green-500" />
+            <StatCard title="Pesanan" value={stats?.orders || 0} description="Total pesanan" icon="📋" />
+            <StatCard title="Menu" value={stats?.products || 0} description="Item menu" icon="🍽️" />
+            <StatCard title="Pelanggan" value={stats?.users || 0} description="Terdaftar" icon="👥" />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Ringkasan Bulan Ini</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center p-3 rounded-lg bg-card/50">
+                    <span className="text-muted-foreground">Total Penjualan</span>
+                    <span className="font-bold text-green-500">{formatCurrency(stats?.revenue_month || 0)}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-3 rounded-lg bg-card/50">
+                    <span className="text-muted-foreground">Rata-rata per Hari</span>
+                    <span className="font-bold">{formatCurrency((stats?.revenue_month || 0) / 30)}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Paket Berlangganan</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <Badge variant={stats?.tier === 'free' ? 'default' : 'success'}>{stats?.tier?.toUpperCase() || 'FREE'}</Badge>
+                    <span className="text-sm text-muted-foreground">{stats?.ram_mb}MB RAM • {stats?.cpu_cores} Core</span>
+                  </div>
+                  <Button className="w-full" onClick={() => window.location.href = '/admin/pricing'}>
+                    Upgrade Paket
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      );
+    };
+
+    // SuperAdmin Dashboard Page
+    const SuperAdminDashboard = () => {
+      const { user } = useAuth();
+      const [stats, setStats] = useState(null);
+      const [tenants, setTenants] = useState([]);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        Promise.all([
+          api.get('/superadmin/stats'),
+          api.get('/superadmin/tenants')
+        ]).then(([s, t]) => {
+          setStats(s);
+          setTenants(t.tenants);
+        }).catch(console.error).finally(() => setLoading(false));
+      }, []);
+
+      if (loading) return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div></div>;
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <h1 className="text-3xl font-bold">Superadmin Dashboard</h1>
+          
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <StatCard title="Total Tenant" value={stats?.totalTenants || 0} icon="🏪" />
+            <StatCard title="Tenant Aktif" value={stats?.activeTenants || 0} icon="✅" color="text-green-500" />
+            <StatCard title="Revenue Bulanan" value={formatCurrency(stats?.monthlyRevenue || 0)} icon="💰" color="text-yellow-500" />
+            <StatCard title="Free Tier" value={stats?.byTier?.free || 0} icon="🆓" />
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Semua Tenant</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-2">Nama</th>
+                      <th className="text-left p-2">Slug</th>
+                      <th className="text-left p-2">Tier</th>
+                      <th className="text-left p-2">Status</th>
+                      <th className="text-left p-2">Bergabung</th>
+                      <th className="text-left p-2">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tenants.map(t => (
+                      <tr key={t.id} className="border-b hover:bg-card/50">
+                        <td className="p-2">{t.name}</td>
+                        <td className="p-2 font-mono text-xs">{t.slug}</td>
+                        <td className="p-2"><Badge>{t.pricing_tier?.toUpperCase()}</Badge></td>
+                        <td className="p-2"><Badge variant={t.status === 'active' ? 'success' : 'warning'}>{t.status}</Badge></td>
+                        <td className="p-2 text-muted-foreground">{formatDate(t.created_at)}</td>
+                        <td className="p-2">
+                          <Button size="sm" variant="ghost" onClick={() => window.open(`https://${t.slug}.caffe.my.id/admin`, '_blank')}>Buka</Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    };
+
+    // Pricing Page
+    const PricingPage = () => {
+      const [plans, setPlans] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [upgrading, setUpgrading] = useState(false);
+
+      useEffect(() => {
+        api.get('/pricing').then(r => setPlans(r.plans)).catch(console.error).finally(() => setLoading(false));
+      }, []);
+
+      const handleUpgrade = async (tier) => {
+        setUpgrading(true);
+        try {
+          await api.post('/upgrade', { tier });
+          alert('Upgrade berhasil!');
+          window.location.reload();
+        } catch (err) {
+          alert(err.message);
+        } finally {
+          setUpgrading(false);
+        }
+      };
+
+      if (loading) return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div></div>;
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <h1 className="text-3xl font-bold">Paket Berlangganan</h1>
+          <p className="text-muted-foreground">Pilih paket yang sesuai dengan kebutuhan cafe Anda</p>
+          
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+            {plans.map((plan) => (
+              <Card key={plan.tier} className={plan.tier === 'free' ? 'border-primary' : ''}>
+                <CardHeader className="text-center">
+                  {plan.tier === 'free' && <Badge className="mx-auto mb-2">Recommended</Badge>}
+                  <CardTitle>{plan.name}</CardTitle>
+                  <div className="text-3xl font-bold">{formatCurrency(plan.price_monthly)}<span className="text-sm font-normal text-muted-foreground">/bulan</span></div>
+                </CardHeader>
+                <CardContent>
+                  <ul className="space-y-2 text-sm mb-6">
+                    <li className="flex items-center gap-2"><span>🖥️</span> RAM {plan.ram_mb}MB</li>
+                    <li className="flex items-center gap-2"><span>⚡</span> CPU {plan.cpu_cores} Core</li>
+                    <li className="flex items-center gap-2"><span>💾</span> Disk {plan.disk_mb / 1024}GB</li>
+                    {plan.features?.split('|').slice(3).map((f, i) => <li key={i} className="flex items-center gap-2"><span>✓</span> {f}</li>)}
+                  </ul>
+                  <Button 
+                    className="w-full" 
+                    variant={plan.tier === 'free' ? 'outline' : 'default'}
+                    disabled={upgrading}
+                    onClick={() => handleUpgrade(plan.tier)}
+                  >
+                    {upgrading ? 'Memproses...' : plan.tier === 'free' ? 'Paket Saat Ini' : 'Pilih Paket'}
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // ============ APP ROUTER ============
+    const App = () => {
+      const { user } = useAuth();
+      const [page, setPage] = useState(window.location.pathname.split('/').pop() || 'dashboard');
+      const userType = localStorage.getItem('userType');
+      const isSuper = userType === 'superadmin';
+
+      const navigate = (newPage) => {
+        setPage(newPage);
+        window.history.pushState({}, '', `/admin/${newPage === 'dashboard' ? '' : newPage}`);
+      };
+
+      if (!user) {
+        if (window.location.pathname.includes('forgot-password')) return <ForgotPasswordPage />;
+        return <LoginPage />;
+      }
+
+      return (
+        <div className="min-h-screen bg-background">
+          {/* Header */}
+          <header className="sticky top-0 z-50 w-full border-b border-border bg-card/95 backdrop-blur">
+            <div className="container flex h-14 items-center justify-between">
+              <div className="flex items-center gap-4">
+                <span className="text-xl">{isSuper ? '⚙️' : '☕'}</span>
+                <span className="font-bold">{isSuper ? 'Superadmin' : 'Cafe Admin'}</span>
+              </div>
+              <div className="flex items-center gap-4">
+                {isSuper ? (
+                  <>
+                    <Button variant="ghost" size="sm" onClick={() => navigate('dashboard')}>Dashboard</Button>
+                    <Button variant="ghost" size="sm" onClick={() => navigate('tenants')}>Tenant</Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant="ghost" size="sm" onClick={() => navigate('dashboard')}>Dashboard</Button>
+                    <Button variant="ghost" size="sm" onClick={() => navigate('pricing')}>Paket</Button>
+                  </>
+                )}
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">{user.email}</span>
+                  <Button variant="outline" size="sm" onClick={() => { localStorage.clear(); window.location.reload(); }}>Keluar</Button>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Content */}
+          <main className="container py-6">
+            {isSuper ? (
+              <>
+                {page === 'dashboard' && <SuperAdminDashboard />}
+                {page === 'tenants' && <SuperAdminDashboard />}
+              </>
+            ) : (
+              <>
+                {page === 'dashboard' && <DashboardPage />}
+                {page === 'pricing' && <PricingPage />}
+              </>
+            )}
+          </main>
+        </div>
+      );
+    };
+
+    // ============ MOUNT ============
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    );
+  </script>
+</body>
+</html>

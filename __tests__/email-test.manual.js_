@@ -1,0 +1,43 @@
+require('dotenv').config();
+const { sendMail, sendWelcome, sendForgotPassword, sendLoginInfo } = require('../services/email');
+
+async function test() {
+  const to = 'mosys.id@gmail.com';
+
+  // 1. Welcome test
+  console.log('--- Sending Welcome ---');
+  await sendWelcome({
+    to,
+    name: 'Demo Cafe',
+    adminUrl: 'https://office-demo-cafe.caffe.my.id/admin',
+    email: 'admin@demo-cafe.com',
+    password: 'CafeAzzura2024!',
+    plan: 'Gratis',
+  });
+
+  // 2. Forgot password test
+  console.log('\n--- Sending Forgot Password ---');
+  await sendForgotPassword({
+    to,
+    name: 'Demo Cafe',
+    resetUrl: 'https://office-demo-cafe.caffe.my.id/admin/reset-password?token=abc123def456',
+  });
+
+  // 3. Login info test
+  console.log('\n--- Sending Login Info ---');
+  await sendLoginInfo({
+    to,
+    name: 'Budi',
+    cafeName: 'Demo Cafe',
+    adminUrl: 'https://office-demo-cafe.caffe.my.id/admin',
+    email: 'admin@demo-cafe.com',
+    role: 'Admin',
+  });
+
+  console.log('\n✅ Semua email terkirim!');
+}
+
+test().catch(err => {
+  console.error('❌ Error:', err.message);
+  process.exit(1);
+});
