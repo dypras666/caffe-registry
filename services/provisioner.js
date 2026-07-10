@@ -237,16 +237,87 @@ init().catch(e => { console.error(e); process.exit(1); });
     run(`sleep 5`);
 
     // 9. Update status
-    const adminUrl = `https://office-${slug}.caffe.my.id/admin`;
-    await db.query("UPDATE tenants SET status='active', admin_url=? WHERE id=?", [adminUrl, tenantId]);
+    const adminUrl  = `https://office-${slug}.caffe.my.id/admin`;
+    const cafeUrl   = `https://${slug}.caffe.my.id`;
+    await db.query(
+      "UPDATE tenants SET status='active', admin_url=? WHERE id=?",
+      [adminUrl, tenantId]
+    );
 
     console.log(`[${slug}] Provisioning complete! Admin: ${adminUrl}`);
+
+    // 10. Send "cafe is ready" email via queue
+    const [[t]] = await db.query('SELECT admin_email, name FROM tenants WHERE id=?', [tenantId]);
+    if (t?.admin_email) {
+      const queue = require('./queue');
+      queue.enqueue('email.provision_complete', {
+        to: t.admin_email,
+        name: t.name || slug,
+        slug,
+        adminUrl,
+        cafeUrl,
+        email,
+      }).catch(() => {});
+    }
 
   } catch (error) {
     console.error(`[${slug}] Provisioning failed:`, error.message);
     await db.query("UPDATE tenants SET status='failed' WHERE id=?", [tenantId]);
+
+    // Send failure notification
+    try {
+      const queue = require('./queue');
+      const [[t]] = await db.query('SELECT admin_email, name FROM tenants WHERE id=?', [tenantId]);
+      if (t?.admin_email) {
+        queue.enqueue('email.provision_failed', {
+          to: t.admin_email,
+          name: t.name || slug,
+          slug,
+          error: error.message,
+        }).catch(() => {});
+      }
+    } catch (_) {}
+
     throw error;
   }
+}
+
+async function stopTenant(slug) {
+  const [[tenant]] = await db.query('SELECT * FROM tenants WHERE slug = ?', [slug]);
+  if (!tenant) throw new Error('Tenant not found');
+
+  const backendDir = `${TENANTS_DIR}/${slug}/backend`;
+
+  if (tenant.server_id && tenant.container_id) {
+    const [[server]] = await db.query('SELECT * FROM servers WHERE id = ?', [tenant.server_id]);
+    if (server) sshRun(server, `docker stop ${tenant.container_id} 2>/dev/null || true`);
+  } else {
+    run(`pkill -f "PORT=${tenant.backend_port}" 2>/dev/null || true`);
+  }
+
+  await db.query("UPDATE tenants SET status='suspended', container_status='stopped' WHERE slug=?", [slug]);
+  return { success: true };
+}
+
+async function getTenantLogs(slug, lines = 100) {
+  const [[tenant]] = await db.query('SELECT * FROM tenants WHERE slug = ?', [slug]);
+  if (!tenant) throw new Error('Tenant not found');
+
+  if (tenant.server_id && tenant.container_id) {
+    const [[server]] = await db.query('SELECT * FROM servers WHERE id = ?', [tenant.server_id]);
+    if (server) {
+      try {
+        const logs = sshRun(server, `docker logs --tail ${lines} ${tenant.container_id} 2>&1`);
+        return logs;
+      } catch (e) { return `Log error: ${e.message}`; }
+    }
+  }
+
+  // Local log file
+  const logFile = `/var/log/tenant-${slug}.log`;
+  try {
+    return run(`tail -${lines} ${logFile} 2>/dev/null || echo "No log file"`);
+  } catch { return 'No logs available'; }
 }
 
 async function checkAvailability(slug) {
@@ -439,4 +510,4 @@ async function drainServer(serverId) {
   return { success: true, migrated: tenants.length };
 }
 
-module.exports = { provisionTenant, provisionServer, checkAvailability, restartTenant, migrateTenant, drainServer, sshRun };
+module.exports = { provisionTenant, provisionServer, checkAvailability, restartTenant, stopTenant, getTenantLogs, migrateTenant, drainServer, sshRun };

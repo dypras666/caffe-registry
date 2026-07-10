@@ -59,6 +59,26 @@ queue.register('email.login_info', async ({ to, name, cafeName, adminUrl, email,
   await emailSvc.sendLoginInfo({ to, name, cafeName, adminUrl, email, role });
 });
 
+// ─── Email: provisioning complete ────────────────────────────
+queue.register('email.provision_complete', async ({ to, name, slug, adminUrl, cafeUrl, email }) => {
+  await emailSvc.sendMail({
+    to,
+    subject: '🚀 Cafe Anda Sudah Siap! — Caffe.id',
+    template: 'provision-complete.html',
+    vars: { name, slug, adminUrl, cafeUrl, email },
+  });
+});
+
+// ─── Email: provisioning failed ───────────────────────────────
+queue.register('email.provision_failed', async ({ to, name, slug, error }) => {
+  await emailSvc.sendMail({
+    to,
+    subject: '⚠️ Gagal Deploy Cafe — Caffe.id',
+    template: 'provision-failed.html',
+    vars: { name, slug, error: error || 'Unknown error' },
+  });
+});
+
 // ─── Billing: daily cost deduction ───────────────────────────
 queue.register('billing.daily_deduct', async (_payload, job) => {
   const DAILY_RATE = { free: 0, starter: 1000, business: 2500, enterprise: 5000 };

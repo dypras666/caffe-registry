@@ -1,0 +1,21 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px}
+.wrap{max-width:540px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.header{background:#E63946;padding:32px 24px;text-align:center}
+.header h1{color:#fff;margin:0;font-size:22px;font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:2px}
+.body{padding:28px}
+.error-box{background:#fff0f0;border:2px solid #E63946;padding:12px;font-family:'Courier New',monospace;font-size:12px;color:#c0392b;margin:16px 0}
+.btn{display:block;background:#1A1A1B;color:#fff;padding:14px 24px;text-decoration:none;font-family:'Courier New',monospace;font-weight:bold;text-transform:uppercase;text-align:center;border:2px solid #1A1A1B;margin:8px 0}
+.footer{background:#f0f0f0;padding:16px;text-align:center;font-size:11px;color:#888}
+</style></head><body>
+<div class="wrap">
+  <div class="header"><h1>⚠️ Caffe.id — Deploy Gagal</h1></div>
+  <div class="body">
+    <p>Halo <strong>{{name}}</strong>, terjadi kesalahan saat men-deploy cafe <strong>{{slug}}</strong>.</p>
+    <div class="error-box">{{error}}</div>
+    <p>Tim kami sudah mendapat notifikasi. Silakan buat Support Ticket untuk penanganan lebih lanjut, atau coba deploy ulang dari dashboard.</p>
+    <a href="https://app.caffe.my.id/tenant-dashboard" class="btn">Buka Dashboard →</a>
+  </div>
+  <div class="footer">© Caffe.id</div>
+</div>
+</body></html>

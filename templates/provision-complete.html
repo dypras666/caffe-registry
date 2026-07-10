@@ -1,0 +1,39 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px}
+.wrap{max-width:540px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.header{background:#1A1A1B;padding:32px 24px;text-align:center}
+.header h1{color:#FFD166;margin:0;font-size:22px;font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:2px}
+.rocket{font-size:48px;display:block;text-align:center;margin:20px 0}
+.body{padding:28px}
+.card{background:#f8f8f8;border:2px solid #1A1A1B;padding:16px;margin:16px 0}
+.card .label{font-size:11px;color:#888;text-transform:uppercase;font-family:'Courier New',monospace;font-weight:bold;letter-spacing:1px}
+.card .value{font-size:15px;font-weight:bold;color:#1A1A1B;margin-top:4px;word-break:break-all}
+.btn{display:block;background:#0056B3;color:#fff;padding:14px 24px;text-decoration:none;font-family:'Courier New',monospace;font-weight:bold;text-transform:uppercase;letter-spacing:1px;font-size:13px;text-align:center;border:2px solid #1A1A1B;margin:8px 0}
+.btn.yellow{background:#FFD166;color:#1A1A1B}
+.footer{background:#f0f0f0;padding:16px;text-align:center;font-size:11px;color:#888;font-family:'Courier New',monospace}
+</style></head><body>
+<div class="wrap">
+  <div class="header"><h1>☕ Caffe.id</h1></div>
+  <div class="body">
+    <span class="rocket">🚀</span>
+    <h2 style="font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:1px;margin-top:0">Cafe Anda Sudah Online!</h2>
+    <p>Halo <strong>{{name}}</strong>, sistem manajemen cafe <strong>{{slug}}</strong> berhasil di-deploy dan siap digunakan.</p>
+    <div class="card">
+      <div class="label">Admin Panel (Backoffice)</div>
+      <div class="value">{{adminUrl}}</div>
+    </div>
+    <div class="card">
+      <div class="label">Website Cafe (Customer)</div>
+      <div class="value">{{cafeUrl}}</div>
+    </div>
+    <div class="card">
+      <div class="label">Login Email</div>
+      <div class="value">{{email}}</div>
+    </div>
+    <a href="{{adminUrl}}" class="btn">Buka Admin Panel →</a>
+    <a href="{{cafeUrl}}" class="btn yellow">Lihat Website Cafe →</a>
+    <p style="font-size:13px;color:#666;margin-top:20px">Bookmark kedua link di atas. Jika ada kendala, buka Support Ticket dari dashboard Anda.</p>
+  </div>
+  <div class="footer">© Caffe.id — Jangan balas email ini</div>
+</div>
+</body></html>

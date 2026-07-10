@@ -168,7 +168,39 @@ async function init() {
     INSERT IGNORE INTO superadmins (email, password, name) VALUES (?, ?, ?)
   `, ['admin@caffe.my.id', defaultPass, 'Super Admin']);
 
-  console.log('Registry database initialized with pricing plans!');
+  // Support tickets tables
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS support_tickets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tenant_id INT NOT NULL,
+      subject VARCHAR(255) NOT NULL,
+      message TEXT NOT NULL,
+      priority ENUM('low','normal','high','urgent') DEFAULT 'normal',
+      status ENUM('open','replied','resolved','closed') DEFAULT 'open',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_tenant (tenant_id),
+      INDEX idx_status (status)
+    ) ENGINE=InnoDB
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ticket_replies (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      ticket_id INT NOT NULL,
+      sender ENUM('tenant','admin') NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB
+  `);
+
+  // Add balance column to tenants if missing
+  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS balance DECIMAL(12,2) DEFAULT 0").catch(() => {});
+  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS auto_suspend TINYINT DEFAULT 1").catch(() => {});
+  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_balance_warning DATETIME NULL").catch(() => {});
+
+  console.log('Registry database initialized with pricing plans and tickets!');
   process.exit(0);
 }
 

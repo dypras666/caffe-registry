@@ -525,16 +525,128 @@ app.get('/api/tenant/:id/status', tenantAuth, async (req, res) => {
 // Restart tenant
 app.post('/api/tenant/:id/restart', tenantAuth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Tenant tidak ditemukan' });
-    }
-    
-    await restartTenant(rows[0].slug);
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    await restartTenant(t.slug);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// Stop tenant
+app.post('/api/tenant/:id/stop', tenantAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const { stopTenant } = require('./services/provisioner');
+    await stopTenant(t.slug);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get tenant logs
+app.get('/api/tenant/:id/logs', tenantAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const { getTenantLogs } = require('./services/provisioner');
+    const lines = parseInt(req.query.lines) || 100;
+    const logs = await getTenantLogs(t.slug, lines);
+    res.json({ logs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Tickets ─────────────────────────────────────────────────
+// GET /api/tickets — list tenant's tickets
+app.get('/api/tickets', tenantAuth, async (req, res) => {
+  try {
+    const tenantId = req.tenantUser.tenantId;
+    const [rows] = await db.query(
+      'SELECT * FROM support_tickets WHERE tenant_id=? ORDER BY created_at DESC',
+      [tenantId]
+    );
+    res.json({ tickets: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/tickets — create ticket
+app.post('/api/tickets', tenantAuth, async (req, res) => {
+  try {
+    const tenantId = req.tenantUser.tenantId;
+    const { subject, message, priority = 'normal' } = req.body;
+    if (!subject || !message) return res.status(400).json({ error: 'subject dan message wajib' });
+    const [r] = await db.query(
+      "INSERT INTO support_tickets (tenant_id, subject, message, priority, status) VALUES (?,?,?,?,'open')",
+      [tenantId, subject, message, priority]
+    );
+    const [[ticket]] = await db.query('SELECT * FROM support_tickets WHERE id=?', [r.insertId]);
+    res.status(201).json({ ticket });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/tickets/:id — get ticket + replies
+app.get('/api/tickets/:id', tenantAuth, async (req, res) => {
+  try {
+    const tenantId = req.tenantUser.tenantId;
+    const [[ticket]] = await db.query(
+      'SELECT * FROM support_tickets WHERE id=? AND tenant_id=?', [req.params.id, tenantId]
+    );
+    if (!ticket) return res.status(404).json({ error: 'Ticket tidak ditemukan' });
+    const [replies] = await db.query(
+      'SELECT * FROM ticket_replies WHERE ticket_id=? ORDER BY created_at ASC', [req.params.id]
+    );
+    res.json({ ticket, replies });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/tickets/:id/reply — tenant reply
+app.post('/api/tickets/:id/reply', tenantAuth, async (req, res) => {
+  try {
+    const tenantId = req.tenantUser.tenantId;
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: 'message wajib' });
+    const [[ticket]] = await db.query(
+      'SELECT * FROM support_tickets WHERE id=? AND tenant_id=?', [req.params.id, tenantId]
+    );
+    if (!ticket) return res.status(404).json({ error: 'Ticket tidak ditemukan' });
+    await db.query(
+      "INSERT INTO ticket_replies (ticket_id, sender, message) VALUES (?,?,?)",
+      [req.params.id, 'tenant', message]
+    );
+    await db.query("UPDATE support_tickets SET updated_at=NOW() WHERE id=?", [req.params.id]);
+    res.status(201).json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/superadmin/tickets/:id/reply — admin reply
+app.post('/api/superadmin/tickets/:id/reply', superadminAuth, async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: 'message wajib' });
+    await db.query(
+      "INSERT INTO ticket_replies (ticket_id, sender, message) VALUES (?,?,?)",
+      [req.params.id, 'admin', message]
+    );
+    await db.query("UPDATE support_tickets SET status='replied', updated_at=NOW() WHERE id=?", [req.params.id]);
+    res.status(201).json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/superadmin/tickets — all tickets
+app.get('/api/superadmin/tickets', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT st.*, t.name AS tenant_name, t.slug
+       FROM support_tickets st LEFT JOIN tenants t ON t.id=st.tenant_id
+       ORDER BY st.created_at DESC LIMIT 100`
+    );
+    res.json({ tickets: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Tenant count

@@ -124,18 +124,13 @@ app.use('/', (req, res) => {
   let basePath;
   let urlPath = req.originalUrl;
   
-  if (urlPath.startsWith('/admin')) {
+  // Admin subdomain (office-*) serves admin SPA from root
+  if (req.tenantType === 'admin') {
+    basePath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'admin');
+  } else if (urlPath.startsWith('/admin')) {
     basePath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'admin');
     urlPath = urlPath.replace('/admin', '') || '/';
   } else {
-    // Check admin assets too (admin index.html references /assets/...)
-    const adminAssetPath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'admin', urlPath.replace(/^\//, ''));
-    if (fs.existsSync(adminAssetPath) && fs.statSync(adminAssetPath).isFile()) {
-      const mimeType = getMimeType(adminAssetPath);
-      res.setHeader('Content-Type', mimeType);
-      res.setHeader('Cache-Control', 'public, max-age=31536000');
-      return res.sendFile(adminAssetPath);
-    }
     basePath = path.join(TENANTS_DIR, slug, 'backend', 'public', 'ui');
   }
   

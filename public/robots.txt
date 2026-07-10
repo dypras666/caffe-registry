@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /tenant-dashboard
+Disallow: /superadmin-dashboard
+Disallow: /api/
+
+Sitemap: https://app.caffe.my.id/sitemap.xml
