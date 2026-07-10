@@ -164,6 +164,28 @@ async function init() {
   \`);
 
   await conn.query(\`
+    CREATE TABLE IF NOT EXISTS branches (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      address TEXT,
+      phone VARCHAR(50),
+      email VARCHAR(255),
+      image_url VARCHAR(500),
+      is_active TINYINT DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  \`);
+
+  await conn.query(\`
+    CREATE TABLE IF NOT EXISTS settings (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      setting_key VARCHAR(100) UNIQUE NOT NULL,
+      setting_value TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  \`);
+
+  await conn.query(\`
     CREATE TABLE IF NOT EXISTS tables (
       id INT AUTO_INCREMENT PRIMARY KEY,
       number INT NOT NULL UNIQUE,
@@ -220,6 +242,10 @@ async function init() {
   const hashedPassword = await bcrypt.hash(seed.adminPassword, 10);
   await conn.query("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
     ['Admin', seed.adminEmail, hashedPassword, 'admin']);
+
+  // Auto-create cafe name & default branch from tenant name
+  await conn.query("INSERT INTO settings (setting_key, setting_value) VALUES ('cafe_name', ?), ('cafe_address', '') ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [tenant.name]).catch(() => {});
+  await conn.query("INSERT IGNORE INTO branches (name, address, phone, is_active) VALUES (?, '', '', 1)", [tenant.name]).catch(() => {});
 
   await conn.end();
   console.log('Database initialized');
