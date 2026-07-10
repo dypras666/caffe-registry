@@ -9,14 +9,19 @@ async function selectBestServer(tenantTier) {
     ORDER BY current_tenants ASC, usage_pct ASC
   `);
 
-  const tierResources = { free: { ram: 64, cpu: 0.25, disk: 500 }, starter: { ram: 256, cpu: 0.5, disk: 2000 }, business: { ram: 1024, cpu: 2, disk: 10000 }, enterprise: { ram: 4096, cpu: 4, disk: 50000 } };
+  if (!servers.length) return null;
 
+  const tierResources = { free: { ram: 64, cpu: 0.25, disk: 500 }, starter: { ram: 256, cpu: 0.5, disk: 2000 }, business: { ram: 1024, cpu: 2, disk: 10000 }, enterprise: { ram: 4096, cpu: 4, disk: 50000 } };
   const needed = tierResources[tenantTier] || tierResources.free;
 
-  return servers.find(s => (s.total_ram_mb - s.used_ram_mb) >= needed.ram
+  // Best fit: server with enough resources
+  const best = servers.find(s => (s.total_ram_mb - s.used_ram_mb) >= needed.ram
     && (s.total_cpu_cores - s.used_cpu_cores) >= needed.cpu
     && (s.total_disk_mb - s.used_disk_mb) >= needed.disk
-  ) || null;
+  );
+
+  // Fallback: use any active server (main server) if no perfect fit
+  return best || servers[0];
 }
 
 async function updateServerResourceUsage(serverId, deltaRam, deltaCpu, deltaDisk, deltaTenants = 1) {

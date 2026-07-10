@@ -201,6 +201,7 @@ async function init() {
   await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_balance_warning DATETIME NULL").catch(() => {});
   await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspended_at DATETIME NULL").catch(() => {});
   await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS admin_email VARCHAR(255) NULL").catch(() => {});
+  await db.query("ALTER TABLE servers ADD COLUMN IF NOT EXISTS ssh_password VARCHAR(255) NULL").catch(() => {});
 
   console.log('Registry database initialized with pricing plans and tickets!');
   process.exit(0);
