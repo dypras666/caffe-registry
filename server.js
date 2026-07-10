@@ -317,29 +317,34 @@ app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
 // Superadmin - Update tenant
 app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
-    const { status, pricing_tier } = req.body;
-    const updates = [];
-    const values = [];
-    
-    if (status) { updates.push('status = ?'); values.push(status); }
-    if (pricing_tier) { updates.push('pricing_tier = ?'); values.push(pricing_tier); }
-    
-    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    
+    const allowed = ['name', 'email', 'phone', 'status', 'pricing_tier', 'admin_email', 'balance', 'auto_suspend'];
+    const updates = [], values = [];
+    for (const field of allowed) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        values.push(req.body[field]);
+      }
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No fields to update' });
     values.push(req.params.id);
-    await db.query(`UPDATE tenants SET ${updates.join(', ')} WHERE id = ?`, values);
-    
-    res.json({ success: true });
+    await db.query(`UPDATE tenants SET ${updates.join(', ')}, updated_at=NOW() WHERE id = ?`, values);
+    const [[updated]] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
+    res.json({ success: true, tenant: updated });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Superadmin - Delete tenant
+// Superadmin - Delete tenant (blocked if active)
 app.delete('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
+    const [[tenant]] = await db.query('SELECT id, slug, status FROM tenants WHERE id = ?', [req.params.id]);
+    if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    if (tenant.status === 'active') {
+      return res.status(400).json({ error: 'Tidak bisa hapus tenant yang masih aktif. Suspend atau nonaktifkan dulu.' });
+    }
     await db.query('DELETE FROM tenants WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, message: `Tenant ${tenant.slug} dihapus` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
