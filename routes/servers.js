@@ -142,6 +142,60 @@ router.post('/:id/migrate/:tenantId', superadminAuth, async (req, res) => {
   }
 });
 
+// GET /api/servers/:id/tenants — list tenants on this server
+router.get('/:id/tenants', superadminAuth, async (req, res) => {
+  try {
+    const [tenants] = await db.query(
+      `SELECT id, name, slug, status, pricing_tier, balance, backend_port, created_at
+       FROM tenants WHERE server_id = ? ORDER BY created_at DESC`,
+      [req.params.id]
+    );
+    res.json({ tenants });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/servers/:id/logs — provisioning log file
+router.get('/:id/logs', superadminAuth, async (req, res) => {
+  try {
+    const [[server]] = await db.query('SELECT * FROM servers WHERE id = ?', [req.params.id]);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+
+    // Try to get recent tenant provisioning logs on this server
+    const [tenants] = await db.query(
+      "SELECT slug FROM tenants WHERE server_id = ? AND status IN ('active','failed') ORDER BY updated_at DESC LIMIT 5",
+      [req.params.id]
+    );
+
+    const fs = require('fs');
+    const lines = parseInt(req.query.lines) || 200;
+    const logs = [];
+
+    // Registry-level log
+    const registryLog = '/var/log/cafe-registry.log';
+    if (fs.existsSync(registryLog)) {
+      const { execSync } = require('child_process');
+      try {
+        const content = execSync(`tail -${lines} ${registryLog} 2>/dev/null`).toString();
+        logs.push({ source: 'registry', content });
+      } catch (_) {}
+    }
+
+    // Per-tenant logs
+    for (const t of tenants) {
+      const logFile = `/var/log/tenant-${t.slug}.log`;
+      if (fs.existsSync(logFile)) {
+        const { execSync } = require('child_process');
+        try {
+          const content = execSync(`tail -50 ${logFile} 2>/dev/null`).toString();
+          logs.push({ source: `tenant:${t.slug}`, content });
+        } catch (_) {}
+      }
+    }
+
+    res.json({ server, logs });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // DELETE /api/servers/:id — decommission
 router.delete('/:id', superadminAuth, async (req, res) => {
   try {
