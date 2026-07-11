@@ -44,5 +44,22 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: root
           key: ${{ secrets.VPS_SSH_KEY }}
-          script: bash /opt/cafe-registry/deploy-registry.sh
-          timeout: 60s
+          script: |
+            set -e
+            cd /opt/cafe-registry
+            git fetch origin main
+            git reset --hard origin/main
+            npm install --production
+            chmod +x deploy-registry.sh 2>/dev/null || true
+            pkill -f "node server.js" 2>/dev/null || true
+            sleep 1
+            setsid node server.js >> /var/log/cafe-registry.log 2>&1 &
+            PID=$!
+            sleep 2
+            if kill -0 $PID 2>/dev/null; then
+              echo "Deploy OK — PID $PID"
+            else
+              echo "FAIL"
+              exit 1
+            fi
+          timeout: 120s
