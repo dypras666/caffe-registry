@@ -37,9 +37,9 @@ app.use(helmet({
         'https://*.is3.cloudhost.id',
         'https://*.cloudhost.id',
         'https://resend.com',
-        'https://*.caffe.my.id',
+        ...(process.env.APP_DOMAIN ? [`https://*.${process.env.APP_DOMAIN}`] : []),
       ],
-      connectSrc: ["'self'", 'https://*.caffe.my.id'],
+      connectSrc: ["'self'", ...(process.env.APP_DOMAIN ? [`https://*.${process.env.APP_DOMAIN}`] : [])],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],
     },
@@ -240,7 +240,7 @@ app.post('/api/auth/forgot', authLimiter, async (req, res) => {
 
     // Send email
     const tenant = tenants[0];
-    const siteUrl = process.env.SITE_URL || 'https://caffe.my.id';
+    const siteUrl = process.env.SITE_URL || `https://${process.env.APP_DOMAIN || 'caffe.id'}`;
     const resetUrl = `${siteUrl}/reset-password?token=${token}`;
 
     queue.enqueue('email.forgot_password', {
@@ -595,7 +595,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
     provisionTenant(tenantId, slug, email, password).catch(console.error);
 
     // Send welcome email
-    const adminUrl = `https://office-${slug}.caffe.my.id/admin`;
+    const adminUrl = `https://office-${slug}.${process.env.APP_DOMAIN || 'caffe.id'}/admin`;
     queue.enqueue('email.welcome', {
       to: email,
       name,
@@ -933,7 +933,7 @@ app.post('/api/payment/test/tripay', superadminAuth, async (req, res) => {
           customer_email: 'test@example.com',
           order_items: [{ sku: 'TEST', name: 'Test Payment', price: 10000, quantity: 1 }],
           signature,
-          return_url: 'https://caffe.my.id',
+          return_url: process.env.SITE_URL || `https://${process.env.APP_DOMAIN || 'caffe.id'}`,
         }),
       });
       transaction = await txRes.json();

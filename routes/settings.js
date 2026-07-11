@@ -22,9 +22,9 @@ router.get('/', async (req, res) => {
     }
 
     if (isAdmin) {
-      [rows] = await db.query('SELECT * FROM system_settings ORDER BY setting_group, sort_order, setting_key');
+      [rows] = await db.query('SELECT * FROM system_settings ORDER BY setting_group, setting_key');
     } else {
-      [rows] = await db.query('SELECT setting_key, setting_value, label, description, setting_type, setting_group, is_public FROM system_settings WHERE is_public=1 ORDER BY setting_group, sort_order, setting_key');
+      [rows] = await db.query('SELECT setting_key, setting_value, label, description, setting_type, setting_group, is_public FROM system_settings WHERE is_public=1 ORDER BY setting_group, setting_key');
     }
 
     res.json({ settings: rows });
