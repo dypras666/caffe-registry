@@ -8,7 +8,7 @@ router.get('/methods', async (req, res) => {
   try {
     // First, fetch which gateways are enabled in settings
     const [settingsRows] = await db.query(
-      "SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'payment_%_active'"
+      "SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'payment_%_active'"
     );
     const activeGateways = new Set();
     for (const row of settingsRows) {
