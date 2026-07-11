@@ -54,6 +54,9 @@ async function init() {
       admin_port INT,
       ui_port INT,
       admin_url VARCHAR(500),
+      balance INT DEFAULT 0,
+      auto_suspend BOOLEAN DEFAULT TRUE,
+      suspended_at TIMESTAMP NULL,
       reset_token VARCHAR(255),
       reset_token_exp TIMESTAMP NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -128,137 +131,119 @@ async function init() {
     CREATE TABLE IF NOT EXISTS scaling_config (
       id INT AUTO_INCREMENT PRIMARY KEY,
       config_key VARCHAR(100) UNIQUE NOT NULL,
-      config_value TEXT,
+      config_value JSON,
+      description VARCHAR(500),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
 
-  // Insert default scaling config
-  const scalingDefaults = [
-    ['ram_threshold_pct', '80'],
-    ['cpu_threshold_pct', '75'],
-    ['disk_threshold_pct', '85'],
-    ['max_tenants_per_server', '20'],
-    ['min_servers', '1'],
-    ['max_servers', '10'],
-    ['scale_cooldown_minutes', '30'],
-    ['heartbeat_timeout_seconds', '300'],
-    ['auto_drain_hours', '24'],
-    ['drain_usage_below_pct', '20'],
-  ];
-  for (const [key, val] of scalingDefaults) {
-    await db.query(
-      "INSERT IGNORE INTO scaling_config (config_key, config_value) VALUES (?, ?)",
-      [key, val]
-    );
-  }
-
-  // Add server_id and container_id to tenants
-  try {
-    await db.query("ALTER TABLE tenants ADD COLUMN server_id INT AFTER id");
-  } catch (_) {}
-  try {
-    await db.query("ALTER TABLE tenants ADD COLUMN container_id VARCHAR(64) AFTER backend_port");
-  } catch (_) {}
-  try {
-    await db.query("ALTER TABLE tenants ADD COLUMN container_status VARCHAR(20) DEFAULT 'pending' AFTER status");
-  } catch (_) {}
-  try {
-    await db.query("ALTER TABLE tenants MODIFY COLUMN status ENUM('pending','provisioning','active','inactive','failed','migrating') DEFAULT 'pending'");
-  } catch (_) {}
-
-  // Superadmin table
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS superadmins (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      email VARCHAR(255) UNIQUE NOT NULL,
-      password VARCHAR(255) NOT NULL,
-      name VARCHAR(100),
-      is_active TINYINT(1) DEFAULT 1,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Insert default superadmin if not exists
-  const bcrypt = require('bcryptjs');
-  const defaultPass = await bcrypt.hash('CafeAzzura2024!', 10);
-  await db.query(`
-    INSERT IGNORE INTO superadmins (email, password, name) VALUES (?, ?, ?)
-  `, ['admin@caffe.my.id', defaultPass, 'Super Admin']);
-
-  // Support tickets tables
+  // Tickets / support table
   await db.query(`
     CREATE TABLE IF NOT EXISTS support_tickets (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      tenant_id INT NOT NULL,
+      tenant_id INT,
       subject VARCHAR(255) NOT NULL,
       message TEXT NOT NULL,
-      priority ENUM('low','normal','high','urgent') DEFAULT 'normal',
-      status ENUM('open','replied','resolved','closed') DEFAULT 'open',
+      priority ENUM('normal','high','urgent') DEFAULT 'normal',
+      status ENUM('open','in_progress','resolved','closed') DEFAULT 'open',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_tenant (tenant_id),
-      INDEX idx_status (status)
-    ) ENGINE=InnoDB
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+    )
   `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS ticket_replies (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      ticket_id INT NOT NULL,
-      sender ENUM('tenant','admin') NOT NULL,
+      ticket_id INT,
+      admin_id INT,
       message TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE
-    ) ENGINE=InnoDB
+    )
   `);
 
-  // Add balance column to tenants if missing
-  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS balance DECIMAL(12,2) DEFAULT 0").catch(() => {});
-  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS auto_suspend TINYINT DEFAULT 1").catch(() => {});
-  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_balance_warning DATETIME NULL").catch(() => {});
-  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspended_at DATETIME NULL").catch(() => {});
-  await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS admin_email VARCHAR(255) NULL").catch(() => {});
-  await db.query("ALTER TABLE servers ADD COLUMN IF NOT EXISTS ssh_password VARCHAR(255) NULL").catch(() => {});
+  // Queue / email jobs table
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS queue_jobs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      type VARCHAR(100) NOT NULL,
+      payload JSON,
+      status ENUM('pending','processing','completed','failed') DEFAULT 'pending',
+      retries INT DEFAULT 0,
+      max_retries INT DEFAULT 3,
+      error TEXT,
+      scheduled_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP NULL,
+      INDEX idx_status (status),
+      INDEX idx_type (type)
+    )
+  `);
 
-  // Seed SaaS landing settings (INSERT IGNORE = skip if exists)
-  const siteSettings = [
-    // site identity
-    ['site_name',        'Caffe.id',                          'text',  'general', 'Nama Situs',         1],
-    ['site_tagline',     'Platform SaaS Manajemen Kafe Modern','text', 'general', 'Tagline',            1],
-    ['site_description', 'Deploy sistem POS kafe Anda dalam hitungan menit. Multi-cabang, cloud-based, harga mulai gratis.','text','general','Deskripsi',1],
-    ['site_logo_url',    '',                                  'text',  'general', 'URL Logo',           1],
-    ['site_favicon_url', '/favicon.svg',                      'text',  'general', 'URL Favicon',        1],
-    ['site_url',         'https://caffe.my.id',               'text',  'general', 'URL Situs',          1],
-    // hero section
-    ['hero_title',       'Radical Efficiency for Modern POS', 'text',  'landing', 'Hero Title',         1],
-    ['hero_subtitle',    'Deploy sistem kafe Anda dalam hitungan menit. POS, kasir, laporan, reservasi — semua dalam satu platform cloud.','text','landing','Hero Subtitle',1],
-    ['hero_cta_primary', 'Mulai Gratis',                      'text',  'landing', 'CTA Utama',          1],
-    ['hero_cta_secondary','Lihat Demo',                       'text',  'landing', 'CTA Kedua',          1],
-    // contact & social
-    ['contact_email',    'support@caffe.my.id',               'text',  'contact', 'Email Support',      1],
-    ['contact_whatsapp', '',                                  'text',  'contact', 'WhatsApp',           1],
-    ['social_instagram', '',                                  'text',  'social',  'Instagram URL',      1],
-    ['social_facebook',  '',                                  'text',  'social',  'Facebook URL',       1],
-    // smtp
-    ['smtp_from',        'noreply@caffe.my.id',               'text',  'smtp',    'SMTP From',          0],
-    ['smtp_host',        'smtp.sumopod.com',                  'text',  'smtp',    'SMTP Host',          0],
-    ['smtp_port',        '465',                               'text',  'smtp',    'SMTP Port',          0],
-    ['smtp_user',        '',                                  'text',  'smtp',    'SMTP User',          0],
-    ['smtp_pass',        '',                                  'password','smtp',  'SMTP Password',      0],
+  // Payment methods table
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS payment_methods (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      type ENUM('bank_transfer','e_wallet','qris','virtual_account','convenience_store') NOT NULL,
+      account_name VARCHAR(200),
+      account_number VARCHAR(100),
+      provider VARCHAR(100),
+      icon VARCHAR(50),
+      instructions TEXT,
+      is_active BOOLEAN DEFAULT TRUE,
+      sort_order INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_active (is_active)
+    )
+  `);
+
+  // Seed default payment methods
+  const defaultMethods = [
+    ['BCA Transfer', 'bank_transfer', 'PT Cafe Azzura', '1234567890', 'BCA', 'account_balance', 'Transfer ke rekening BCA a.n PT Cafe Azzura', 1, 1],
+    ['Mandiri Transfer', 'bank_transfer', 'PT Cafe Azzura', '9876543210', 'Mandiri', 'account_balance', 'Transfer ke rekening Mandiri a.n PT Cafe Azzura', 1, 2],
+    ['BRI Transfer', 'bank_transfer', 'PT Cafe Azzura', '5678901234', 'BRI', 'account_balance', 'Transfer ke rekening BRI a.n PT Cafe Azzura', 1, 3],
+    ['GoPay', 'e_wallet', 'Cafe Azzura', '08123456789', 'Gojek', 'account_balance_wallet', 'Pembayaran via GoPay', 1, 4],
+    ['OVO', 'e_wallet', 'Cafe Azzura', '08123456789', 'OVO', 'account_balance_wallet', 'Pembayaran via OVO', 1, 5],
+    ['DANA', 'e_wallet', 'Cafe Azzura', '08123456789', 'DANA', 'account_balance_wallet', 'Pembayaran via DANA', 1, 6],
+    ['QRIS', 'qris', '', '', 'QRIS', 'qr_code', 'Scan QRIS via aplikasi pembayaran apapun', 1, 7],
   ];
-  for (const [key, val, type, group, label, isPublic] of siteSettings) {
+  for (const m of defaultMethods) {
     await db.query(
-      'INSERT IGNORE INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public) VALUES (?,?,?,?,?,?)',
-      [key, val, type, group, label, isPublic]
-    ).catch(() => {});
+      `INSERT IGNORE INTO payment_methods (name, type, account_name, account_number, provider, icon, instructions, is_active, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      m
+    );
   }
 
-  console.log('Registry database initialized with pricing plans and tickets!');
+  // Topup transactions table
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS topup_transactions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tenant_id INT NOT NULL,
+      amount INT NOT NULL,
+      payment_method_id INT,
+      status ENUM('pending','completed','failed') DEFAULT 'pending',
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP NULL,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+      FOREIGN KEY (payment_method_id) REFERENCES payment_methods(id),
+      INDEX idx_tenant (tenant_id),
+      INDEX idx_status (status)
+    )
+  `);
+
+  // Add balance column if missing (migration for existing DBs)
+  try { await db.query('ALTER TABLE tenants ADD COLUMN balance INT DEFAULT 0'); } catch (e) {}
+  try { await db.query('ALTER TABLE tenants ADD COLUMN auto_suspend BOOLEAN DEFAULT TRUE'); } catch (e) {}
+  try { await db.query('ALTER TABLE tenants ADD COLUMN suspended_at TIMESTAMP NULL'); } catch (e) {}
+
+  console.log('Registry database initialized.');
   process.exit(0);
 }
 
-init().catch(err => {
-  console.error('Error:', err.message);
-  process.exit(1);
-});
+init().catch(e => { console.error(e); process.exit(1); });

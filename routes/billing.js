@@ -38,10 +38,18 @@ router.get('/tenant/:id', superadminAuth, async (req, res) => {
 // POST /api/billing/tenant/:id/topup — top up balance
 router.post('/tenant/:id/topup', superadminAuth, async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, payment_method_id } = req.body;
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Jumlah top up harus lebih dari 0' });
 
     const tenant = await topUpBalance(req.params.id, amount);
+
+    // Record payment method if provided
+    if (payment_method_id) {
+      await db.query(
+        'INSERT INTO topup_transactions (tenant_id, amount, payment_method_id, status, notes) VALUES (?, ?, ?, ?, ?)',
+        [req.params.id, amount, payment_method_id, 'completed', 'Topup via superadmin']
+      );
+    }
 
     // Queue topup confirmation email
     if (tenant.admin_email) {

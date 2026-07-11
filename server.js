@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const db = require('./config/database');
@@ -21,7 +23,7 @@ const corsWhitelist = process.env.CORS_ORIGIN
 
 app.use(cors({ origin: corsWhitelist, credentials: true }));
 app.use(helmet());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many attempts, try again later' } });
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 100 });
@@ -216,7 +218,8 @@ app.post('/api/auth/forgot', authLimiter, async (req, res) => {
 
     // Send email
     const tenant = tenants[0];
-    const resetUrl = `https://${tenant.slug}.caffe.my.id/admin/reset-password?token=${token}`;
+    const siteUrl = process.env.SITE_URL || 'https://caffe.my.id';
+    const resetUrl = `${siteUrl}/reset-password?token=${token}`;
 
     queue.enqueue('email.forgot_password', {
       to: email,
@@ -367,6 +370,41 @@ app.delete('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   }
 });
 
+// Superadmin - Reprovision tenant
+app.post('/api/superadmin/tenants/:id/reprovision', superadminAuth, async (req, res) => {
+  try {
+    const [[tenant]] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
+    if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const bcrypt = require('bcryptjs');
+    const newPassword = crypto.randomBytes(4).toString('hex');
+    // Stop existing process
+    try {
+      const { stopTenant } = require('./services/provisioner');
+      await stopTenant(tenant.slug);
+    } catch (_) {}
+    await db.query("UPDATE tenants SET status='provisioning', admin_password=?, container_status='provisioning' WHERE id=?", [
+      await bcrypt.hash(newPassword, 10), req.params.id
+    ]);
+    const { provisionTenant } = require('./services/provisioner');
+    provisionTenant(tenant.id, tenant.slug, tenant.admin_email, newPassword)
+      .then(() => console.log(`[${tenant.slug}] Reprovision success`))
+      .catch(e => console.error(`[${tenant.slug}] Reprovision failed:`, e.message));
+    res.json({ success: true, message: 'Reprovisioning dimulai (3-5 menit)', new_password: newPassword });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Get tenant logs
+app.get('/api/superadmin/tenants/:id/logs', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const { getTenantLogs } = require('./services/provisioner');
+    const lines = parseInt(req.query.lines) || 100;
+    const logs = await getTenantLogs(t.slug, lines);
+    res.json({ logs });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
 // Superadmin - Statistics
 app.get('/api/superadmin/stats', superadminAuth, async (req, res) => {
   try {
@@ -449,6 +487,7 @@ app.post('/api/tenant/:slug/login', authLimiter, async (req, res) => {
 const serversRouter = require('./routes/servers');
 const autoscalerRouter = require('./routes/autoscaler');
 const billingRouter = require('./routes/billing');
+const paymentRouter = require('./routes/payment');
 const settingsRouter = require('./routes/settings');
 const queueRouter = require('./routes/queue');
 const { startAutoScaler } = require('./services/autoscaler');
@@ -458,6 +497,7 @@ const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/e
 
 app.use('/api/servers', serversRouter);
 app.use('/api/autoscaler', autoscalerRouter);
+app.use('/api/payment', paymentRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/queue', queueRouter);
@@ -697,6 +737,38 @@ app.get('/api/superadmin/tickets', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/superadmin/tickets/:id — single ticket + replies (superadmin sees all)
+app.get('/api/superadmin/tickets/:id', superadminAuth, async (req, res) => {
+  try {
+    const [[ticket]] = await db.query(
+      `SELECT st.*, t.name AS tenant_name, t.slug
+       FROM support_tickets st LEFT JOIN tenants t ON t.id=st.tenant_id
+       WHERE st.id=?`,
+      [req.params.id]
+    );
+    if (!ticket) return res.status(404).json({ error: 'Ticket tidak ditemukan' });
+    const [replies] = await db.query(
+      'SELECT * FROM ticket_replies WHERE ticket_id=? ORDER BY created_at ASC',
+      [req.params.id]
+    );
+    res.json({ ticket, replies });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/superadmin/tickets/:id/status — update ticket status
+app.put('/api/superadmin/tickets/:id/status', superadminAuth, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const valid = ['open', 'replied', 'resolved', 'closed'];
+    if (!valid.includes(status)) return res.status(400).json({ error: 'Status tidak valid' });
+    await db.query(
+      'UPDATE support_tickets SET status=?, updated_at=NOW() WHERE id=?',
+      [status, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Tenant count
 app.get('/api/stats', async (req, res) => {
   try {
@@ -709,6 +781,135 @@ app.get('/api/stats', async (req, res) => {
   } catch (error) {
     res.json({ activeTenants: 0, monthlyRevenue: 0 });
   }
+});
+
+// ─── QRIS Image Upload (base64) ──────────────────────────────
+app.post('/api/media/upload-qris', superadminAuth, async (req, res) => {
+  try {
+    const { image } = req.body;
+    if (!image) return res.status(400).json({ error: 'Data gambar diperlukan' });
+    const matches = image.match(/^data:image\/(png|jpeg|jpg|gif|webp);base64,(.+)$/);
+    if (!matches) return res.status(400).json({ error: 'Format gambar tidak valid. Gunakan PNG/JPEG base64' });
+    const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+    const buffer = Buffer.from(matches[2], 'base64');
+    if (buffer.length > 2 * 1024 * 1024) return res.status(400).json({ error: 'Ukuran gambar maksimal 2MB' });
+    const filename = `qris-${Date.now()}.${ext}`;
+    const uploadDir = path.join(__dirname, 'public', 'uploads', 'qris');
+    fs.mkdirSync(uploadDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadDir, filename), buffer);
+    const url = '/uploads/qris/' + filename;
+    await db.query(
+      "INSERT INTO system_settings (setting_key, setting_value) VALUES ('payment_qris_image', ?) ON DUPLICATE KEY UPDATE setting_value=?",
+      [url, url]
+    );
+    res.json({ success: true, url });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// ─── Payment Gateway Tests ───────────────────────────────────
+async function getSettings(prefix) {
+  const [rows] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE ?", [prefix + '%']);
+  const cfg = {};
+  for (const r of rows) cfg[r.setting_key] = r.setting_value;
+  return cfg;
+}
+
+// POST /api/payment/test/midtrans — test connection & create dummy transaction
+app.post('/api/payment/test/midtrans', superadminAuth, async (req, res) => {
+  try {
+    const cfg = await getSettings('payment_midtrans_');
+    if (!cfg.payment_midtrans_server_key) return res.status(400).json({ error: 'Server Key Midtrans belum dikonfigurasi' });
+    const isProd = cfg.payment_midtrans_is_production === '1';
+    const baseUrl = isProd ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
+    const auth = Buffer.from(cfg.payment_midtrans_server_key + ':').toString('base64');
+    const orderId = 'TEST-' + Date.now();
+    const snapBody = {
+      transaction_details: { order_id: orderId, gross_amount: 10000 },
+      credit_card: { secure: true },
+      customer_details: { first_name: 'Test', email: 'test@caffe.my.id' },
+    };
+    const snapRes = await fetch(baseUrl + '/snap/v1/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
+      body: JSON.stringify(snapBody),
+    });
+    const snapResult = await snapRes.json();
+    res.json({
+      success: snapRes.ok,
+      order_id: orderId,
+      amount: 10000,
+      message: snapRes.ok ? 'Transaksi test berhasil dibuat' : (snapResult.error_message || 'Gagal'),
+      transaction: snapResult,
+      payment_url: snapResult.redirect_url || null,
+      token: snapResult.token || null,
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// POST /api/payment/test/tripay — test connection & create dummy transaction
+app.post('/api/payment/test/tripay', superadminAuth, async (req, res) => {
+  try {
+    const cfg = await getSettings('payment_tripay_');
+    if (!cfg.payment_tripay_api_key || !cfg.payment_tripay_merchant_code) {
+      return res.status(400).json({ error: 'Konfigurasi Tripay belum lengkap (API Key & Merchant Code)' });
+    }
+    const isProd = cfg.payment_tripay_is_production === '1';
+    const baseUrl = isProd ? 'https://tripay.co.id/api' : 'https://tripay.co.id/api-sandbox';
+    // 1. Test connection: get payment channels
+    const channelRes = await fetch(baseUrl + '/merchant/payment-channel', {
+      headers: { 'Authorization': 'Bearer ' + cfg.payment_tripay_api_key },
+    });
+    const channels = await channelRes.json();
+    if (!channelRes.ok) {
+      return res.json({ success: false, message: channels.message || 'Gagal terkoneksi ke Tripay', detail: channels });
+    }
+    // 2. Create dummy transaction if private key exists
+    let transaction = null;
+    if (cfg.payment_tripay_private_key) {
+      const timestamp = Math.floor(Date.now() / 1000);
+      const merchantRef = 'TEST-' + Date.now();
+      const signature = crypto.createHmac('sha256', cfg.payment_tripay_private_key)
+        .update(merchantRef + 10000 + 'TEST')
+        .digest('hex');
+      const txRes = await fetch(baseUrl + '/transaction/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.payment_tripay_api_key },
+        body: JSON.stringify({
+          method: 'BRIVA',
+          merchant_ref: merchantRef,
+          amount: 10000,
+          customer_name: 'Test User',
+          customer_email: 'test@caffe.my.id',
+          order_items: [{ sku: 'TEST', name: 'Test Payment', price: 10000, quantity: 1 }],
+          signature,
+          return_url: 'https://caffe.my.id',
+        }),
+      });
+      transaction = await txRes.json();
+    }
+    res.json({
+      success: true,
+      message: 'Koneksi ke Tripay berhasil',
+      channels: channels.data || [],
+      transaction,
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// POST /api/payment/test/callback — simulate test callback from gateway
+app.post('/api/payment/test/callback', superadminAuth, async (req, res) => {
+  try {
+    const { gateway, payload } = req.body;
+    res.json({
+      success: true,
+      message: `Callback ${gateway} diterima (simulasi)`,
+      received: { gateway, payload },
+      processed: {
+        status: 'pending',
+        note: 'Callback handler belum terintegrasi penuh — data tersimpan di log.',
+      },
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
 function safeError(err) {
