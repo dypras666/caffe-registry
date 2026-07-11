@@ -22,7 +22,29 @@ const corsWhitelist = process.env.CORS_ORIGIN
   : [/\.caffe\.my\.id$/, /^https?:\/\/localhost(:[0-9]+)?$/];
 
 app.use(cors({ origin: corsWhitelist, credentials: true }));
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://fonts.googleapis.com'],
+      imgSrc: [
+        "'self'",
+        'data:',
+        'blob:',
+        'https://akas.is3.cloudhost.id',
+        'https://*.is3.cloudhost.id',
+        'https://*.cloudhost.id',
+        'https://resend.com',
+        'https://*.caffe.my.id',
+      ],
+      connectSrc: ["'self'", 'https://*.caffe.my.id'],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+    },
+  },
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many attempts, try again later' } });
