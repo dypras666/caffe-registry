@@ -105,7 +105,8 @@ async function sendMail({ to, subject, template, vars, from }) {
 
   // Resend requires a verified domain; fallback to their default for free accounts
   const resendFrom = process.env.RESEND_FROM || 'Caffe.id <onboarding@resend.dev>';
-  const smtpFrom = from || process.env.SMTP_FROM || 'noreply@caffe.my.id';
+  const domain = process.env.APP_DOMAIN || 'caffe.id';
+  const smtpFrom = from || process.env.SMTP_FROM || `noreply@${domain}`;
   const fromAddr = smtpFrom;
 
   const mailOpts = { from: `"Caffe.id" <${fromAddr}>`, to, subject, html };

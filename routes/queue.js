@@ -45,14 +45,16 @@ router.post('/test-email/:type', superadminAuth, async (req, res) => {
   const { to } = req.body;
   if (!to) return res.status(400).json({ error: 'to (email) wajib' });
 
+  const siteUrl = process.env.SITE_URL || 'https://caffe.id';
+  const domain  = process.env.APP_DOMAIN || 'caffe.id';
   const samples = {
-    'welcome':          { type: 'email.welcome',         payload: { to, name: 'Test User', adminUrl: 'https://admin.example.com', email: to, password: 'test123', plan: 'starter' } },
-    'forgot_password':  { type: 'email.forgot_password',  payload: { to, name: 'Test User', resetUrl: 'https://app.caffe.my.id/reset?token=abc123' } },
+    'welcome':          { type: 'email.welcome',         payload: { to, name: 'Test User', adminUrl: `https://office-test.${domain}/admin`, email: to, password: 'test123', plan: 'starter' } },
+    'forgot_password':  { type: 'email.forgot_password',  payload: { to, name: 'Test User', resetUrl: `${siteUrl}/reset-password?token=abc123` } },
     'topup_confirm':    { type: 'email.topup_confirm',    payload: { to, name: 'Test User', amount: 50000, balance: 150000, slug: 'test-cafe' } },
-    'balance_warning':  { type: 'email.balance_warning',  payload: { to, name: 'Test User', slug: 'test-cafe', balance: 3000, dailyCost: 1000, daysLeft: 3, topupUrl: 'https://app.caffe.my.id/billing' } },
-    'suspended':        { type: 'email.suspended',        payload: { to, name: 'Test User', slug: 'test-cafe', topupUrl: 'https://app.caffe.my.id/billing' } },
-    'expiry_reminder':  { type: 'email.expiry_reminder',  payload: { to, name: 'Test User', slug: 'test-cafe', expiryDate: '31 Des 2026', daysLeft: 7, renewUrl: 'https://app.caffe.my.id/billing' } },
-    'login_info':       { type: 'email.login_info',       payload: { to, name: 'Test User', cafeName: 'Test Cafe', adminUrl: 'https://admin.example.com', email: to, role: 'admin' } },
+    'balance_warning':  { type: 'email.balance_warning',  payload: { to, name: 'Test User', slug: 'test-cafe', balance: 3000, dailyCost: 1000, daysLeft: 3, topupUrl: `${siteUrl}/tenant-billing` } },
+    'suspended':        { type: 'email.suspended',        payload: { to, name: 'Test User', slug: 'test-cafe', topupUrl: `${siteUrl}/tenant-billing` } },
+    'expiry_reminder':  { type: 'email.expiry_reminder',  payload: { to, name: 'Test User', slug: 'test-cafe', expiryDate: '31 Des 2026', daysLeft: 7, renewUrl: `${siteUrl}/tenant-billing` } },
+    'login_info':       { type: 'email.login_info',       payload: { to, name: 'Test User', cafeName: 'Test Cafe', adminUrl: `https://office-test.${domain}/admin`, email: to, role: 'admin' } },
   };
 
   const sample = samples[req.params.type];

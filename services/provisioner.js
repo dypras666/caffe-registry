@@ -263,8 +263,9 @@ init().catch(e => { console.error(e); process.exit(1); });
     run(`sleep 5`);
 
     // 9. Update status
-    const adminUrl  = `https://office-${slug}.caffe.my.id/admin`;
-    const cafeUrl   = `https://${slug}.caffe.my.id`;
+    const domain   = process.env.APP_DOMAIN || 'caffe.id';
+    const adminUrl = `https://office-${slug}.${domain}/admin`;
+    const cafeUrl  = `https://${slug}.${domain}`;
     await db.query(
       "UPDATE tenants SET status='active', admin_url=? WHERE id=?",
       [adminUrl, tenantId]

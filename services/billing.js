@@ -72,7 +72,7 @@ async function processTenantBilling(tenant) {
         vars: {
           name: tenant.name || tenant.slug,
           slug: tenant.slug,
-          topupUrl: `https://office-${tenant.slug}.caffe.my.id/admin/billing`,
+          topupUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
         },
       }).catch(() => {});
     }
@@ -117,7 +117,7 @@ async function processTenantBilling(tenant) {
             balance: balance.toLocaleString('id-ID'),
             dailyCost: cost.toLocaleString('id-ID'),
             daysLeft: String(daysLeft),
-            topupUrl: `https://office-${tenant.slug}.caffe.my.id/admin/billing`,
+            topupUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
           },
         });
       }

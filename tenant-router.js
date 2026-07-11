@@ -44,15 +44,16 @@ function extractTenantSlug(host) {
   if (!host) return null;
   host = host.split(':')[0];
   
+  const domain = process.env.APP_DOMAIN || 'caffe.id';
   if (host.startsWith('office-')) {
     return {
-      slug: host.replace('office-', '').replace('.caffe.my.id', ''),
+      slug: host.replace('office-', '').replace(`.${domain}`, ''),
       type: 'admin'
     };
   }
-  
+
   return {
-    slug: host.replace('.caffe.my.id', ''),
+    slug: host.replace(`.${domain}`, ''),
     type: 'ui'
   };
 }

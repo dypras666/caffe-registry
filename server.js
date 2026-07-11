@@ -513,6 +513,7 @@ const paymentRouter = require('./routes/payment');
 const topupRouter = require('./routes/topup');
 const settingsRouter = require('./routes/settings');
 const queueRouter = require('./routes/queue');
+const backupRouter = require('./routes/backup');
 const { startAutoScaler } = require('./services/autoscaler');
 const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/email');
 
@@ -525,6 +526,7 @@ app.use('/api/topup', topupRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/queue', queueRouter);
+app.use('/api/backup', backupRouter);
 
 startAutoScaler();
 
@@ -875,7 +877,7 @@ app.post('/api/payment/test/midtrans', superadminAuth, async (req, res) => {
     const snapBody = {
       transaction_details: { order_id: orderId, gross_amount: 10000 },
       credit_card: { secure: true },
-      customer_details: { first_name: 'Test', email: 'test@caffe.my.id' },
+      customer_details: { first_name: 'Test', email: 'test@example.com' },
     };
     const snapRes = await fetch(baseUrl + '/snap/v1/transactions', {
       method: 'POST',
@@ -928,7 +930,7 @@ app.post('/api/payment/test/tripay', superadminAuth, async (req, res) => {
           merchant_ref: merchantRef,
           amount: 10000,
           customer_name: 'Test User',
-          customer_email: 'test@caffe.my.id',
+          customer_email: 'test@example.com',
           order_items: [{ sku: 'TEST', name: 'Test Payment', price: 10000, quantity: 1 }],
           signature,
           return_url: 'https://caffe.my.id',

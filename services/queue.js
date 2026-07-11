@@ -177,6 +177,20 @@ async function scheduleRecurring() {
     const in6h = new Date(Date.now() + 6 * 60 * 60 * 1000);
     await enqueue('billing.check_warnings', {}, { runAt: in6h });
   }
+
+  // Database backup — daily at midnight + 5 min (after billing deduct)
+  const tomorrowBackup = new Date();
+  tomorrowBackup.setDate(tomorrowBackup.getDate() + 1);
+  tomorrowBackup.setHours(0, 5, 0, 0);
+
+  const [backup] = await db.query(
+    "SELECT id FROM job_queue WHERE type='backup.database' AND status='pending' AND DATE(run_at)=DATE(?)",
+    [tomorrowBackup]
+  );
+  if (!backup.length) {
+    await enqueue('backup.database', {}, { runAt: tomorrowBackup });
+    console.log('[Queue] Scheduled backup.database for', tomorrowBackup.toISOString());
+  }
 }
 
 // ─── Queue stats ──────────────────────────────────────────────

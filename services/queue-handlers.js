@@ -152,7 +152,7 @@ queue.register('billing.check_warnings', async () => {
         balance,
         dailyCost,
         daysLeft,
-        topupUrl: `https://app.caffe.my.id/billing`,
+        topupUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
       });
 
       await db.query('UPDATE tenants SET last_balance_warning = NOW() WHERE id = ?', [t.id]);
@@ -166,7 +166,7 @@ queue.register('billing.check_warnings', async () => {
         to: t.admin_email,
         name: t.name || t.slug,
         slug: t.slug,
-        topupUrl: `https://app.caffe.my.id/billing`,
+        topupUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
       });
     }
   }
@@ -176,6 +176,20 @@ queue.register('billing.check_warnings', async () => {
   // Reschedule every 6 hours
   const in6h = new Date(Date.now() + 6 * 60 * 60 * 1000);
   await queue.enqueue('billing.check_warnings', {}, { runAt: in6h });
+});
+
+// ─── Backup: auto database backup ─────────────────────────────
+queue.register('backup.database', async (_payload, job) => {
+  const backupSvc = require('./backup');
+  console.log(`[Queue] backup.database starting...`);
+  const result = await backupSvc.runBackup();
+  console.log(`[Queue] backup.database: ${result.success_count}/${result.total} databases backed up, ${result.deleted || 0} old backups cleaned`);
+
+  // Reschedule daily at midnight
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 5, 0);
+  await queue.enqueue('backup.database', {}, { runAt: tomorrow });
 });
 
 module.exports = {}; // side-effects only — handlers auto-registered above

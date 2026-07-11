@@ -242,6 +242,18 @@ async function init() {
   try { await db.query('ALTER TABLE tenants ADD COLUMN auto_suspend BOOLEAN DEFAULT TRUE'); } catch (e) {}
   try { await db.query('ALTER TABLE tenants ADD COLUMN suspended_at TIMESTAMP NULL'); } catch (e) {}
 
+  // Seed app_domain setting so frontend can read it
+  const appDomain = process.env.APP_DOMAIN || 'caffe.id';
+  const siteUrl   = process.env.SITE_URL || `https://${appDomain}`;
+  await db.query(
+    'INSERT INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',
+    ['app_domain', appDomain, 'text', 'general', 'Domain Aplikasi', 1]
+  ).catch(() => {});
+  await db.query(
+    'INSERT INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',
+    ['site_url', siteUrl, 'text', 'general', 'URL Situs', 1]
+  ).catch(() => {});
+
   console.log('Registry database initialized.');
   process.exit(0);
 }
