@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const { topUpBalance, getBillingStatus } = require('../services/billing');
-const { superadminAuth } = require('../services/auth');
+const { superadminAuth, tenantAuth } = require('../services/auth');
 const queue = require('../services/queue');
 
 // GET /api/billing/tenants — list all tenant balances
@@ -29,6 +29,16 @@ router.get('/tenants', superadminAuth, async (req, res) => {
 router.get('/tenant/:id', superadminAuth, async (req, res) => {
   try {
     const result = await getBillingStatus(req.params.id);
+    res.json(result);
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
+});
+
+// GET /api/billing/my — tenant's own billing status (member)
+router.get('/my', tenantAuth, async (req, res) => {
+  try {
+    const result = await getBillingStatus(req.tenantUser.tenantId);
     res.json(result);
   } catch (error) {
     res.status(404).json({ error: error.message });

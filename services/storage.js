@@ -1,133 +1,93 @@
+/**
+ * Registry StorageService — env-based config, S3-first
+ * Same pattern as cafe-backend/services/StorageService.js
+ */
 const fs = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 
-const _getLocalPath = () => process.env.STORAGE_LOCAL_PATH || '/opt/cafe-registry/uploads';
+const getDriver = () => (process.env.STORAGE_DRIVER || 's3').toLowerCase();
 
-let s3Client = null;
+const _s3 = (() => {
+  let client = null;
+  return () => {
+    if (!client) {
+      client = new S3Client({
+        endpoint: process.env.STORAGE_S3_ENDPOINT,
+        region: process.env.STORAGE_S3_REGION || 'us-east-1',
+        credentials: {
+          accessKeyId: process.env.STORAGE_S3_KEY || '',
+          secretAccessKey: process.env.STORAGE_S3_SECRET || '',
+        },
+        forcePathStyle: true,
+      });
+    }
+    return client;
+  };
+})();
 
-async function getConfig() {
-  try {
-    const db = require('../config/database');
-    const [rows] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 's3_%'");
-    const cfg = {};
-    for (const r of rows) cfg[r.setting_key] = r.setting_value;
-    return cfg;
-  } catch {
-    return {};
-  }
-}
+const bucket = () => process.env.STORAGE_S3_BUCKET || 'uploads';
+const baseUrl = () => process.env.STORAGE_S3_URL || '';
+const localBase = () => process.env.STORAGE_LOCAL_PATH || path.join(__dirname, '..', 'uploads');
 
-function getS3Client(config) {
-  if (s3Client) return s3Client;
+async function uploadFile(namespace, filePath, buffer, contentType) {
+  const key = namespace ? `${namespace}/${filePath}` : filePath;
 
-  const endpoint = config.s3_endpoint || process.env.S3_ENDPOINT;
-  const region = config.s3_region || process.env.S3_REGION || 'auto';
-  const accessKey = config.s3_access_key || process.env.S3_ACCESS_KEY;
-  const secretKey = config.s3_secret_key || process.env.S3_SECRET_KEY;
-
-  s3Client = new S3Client({
-    endpoint,
-    region,
-    credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
-    forcePathStyle: true,
-  });
-
-  return s3Client;
-}
-
-async function getDriver() {
-  const db = require('../config/database');
-  const [rows] = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'storage_driver'");
-  return rows.length ? rows[0].setting_value : 'local';
-}
-
-async function uploadFile(tenantSlug, filePath, buffer, contentType) {
-  const driver = await getDriver();
-  const key = `${tenantSlug}/${filePath}`;
-
-  if (driver === 's3') {
-    const config = await getConfig();
-    const client = getS3Client(config);
-    const bucket = config.s3_bucket || 'cafe-azzura';
-
-    await client.send(new PutObjectCommand({
-      Bucket: bucket,
+  if (getDriver() === 's3') {
+    await _s3().send(new PutObjectCommand({
+      Bucket: bucket(),
       Key: key,
       Body: buffer,
       ContentType: contentType || 'application/octet-stream',
+      ACL: 'public-read',
     }));
-
-    const endpoint = config.s3_endpoint || '';
-    const publicUrl = endpoint ? `${endpoint}/${bucket}/${key}` : `/api/storage/${key}`;
-    return { url: publicUrl, key, driver: 's3' };
+    const url = `${baseUrl()}/${key}`;
+    return { url, key, driver: 's3' };
   }
 
   // Local fallback
-  const localPath = path.join(_getLocalPath(), key);
+  const localPath = path.join(localBase(), key);
   fs.mkdirSync(path.dirname(localPath), { recursive: true });
   fs.writeFileSync(localPath, buffer);
-  return { url: `/api/storage/${key}`, key, driver: 'local' };
+  return { url: `/uploads/${key}`, key, driver: 'local' };
 }
 
-async function getFile(tenantSlug, filePath) {
-  const driver = await getDriver();
-  const key = `${tenantSlug}/${filePath}`;
+async function getFile(namespace, filePath) {
+  const key = namespace ? `${namespace}/${filePath}` : filePath;
 
-  if (driver === 's3') {
-    const config = await getConfig();
-    const client = getS3Client(config);
-    const bucket = config.s3_bucket || 'cafe-azzura';
-
-    const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-    const buffer = await response.Body.transformToByteArray();
-    return { buffer: Buffer.from(buffer), contentType: response.ContentType };
+  if (getDriver() === 's3') {
+    const res = await _s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }));
+    const buf = await res.Body.transformToByteArray();
+    return { buffer: Buffer.from(buf), contentType: res.ContentType };
   }
 
-  const localPath = path.join(_getLocalPath(), key);
+  const localPath = path.join(localBase(), key);
   if (!fs.existsSync(localPath)) throw new Error('File tidak ditemukan');
   return { buffer: fs.readFileSync(localPath), contentType: 'application/octet-stream' };
 }
 
-async function deleteFile(tenantSlug, filePath) {
-  const driver = await getDriver();
-  const key = `${tenantSlug}/${filePath}`;
+async function deleteFile(namespace, filePath) {
+  const key = namespace ? `${namespace}/${filePath}` : filePath;
 
-  if (driver === 's3') {
-    const config = await getConfig();
-    const client = getS3Client(config);
-    const bucket = config.s3_bucket || 'cafe-azzura';
-    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  if (getDriver() === 's3') {
+    await _s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
     return { deleted: true };
   }
 
-  const localPath = path.join(_getLocalPath(), key);
+  const localPath = path.join(localBase(), key);
   if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
   return { deleted: true };
 }
 
-async function listFiles(tenantSlug, prefix = '') {
-  const driver = await getDriver();
-  const keyPrefix = tenantSlug ? `${tenantSlug}/${prefix}` : prefix;
+async function listFiles(namespace, prefix = '') {
+  const keyPrefix = namespace ? `${namespace}/${prefix}` : prefix;
 
-  if (driver === 's3') {
-    const config = await getConfig();
-    const client = getS3Client(config);
-    const bucket = config.s3_bucket || 'cafe-azzura';
-
-    const response = await client.send(new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: keyPrefix,
-    }));
-
-    return (response.Contents || []).map(obj => ({
-      key: obj.Key,
-      size: obj.Size,
-      lastModified: obj.LastModified,
-    }));
+  if (getDriver() === 's3') {
+    const res = await _s3().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: keyPrefix }));
+    return (res.Contents || []).map(o => ({ key: o.Key, size: o.Size, lastModified: o.LastModified }));
   }
 
-  const localPath = path.join(_getLocalPath(), keyPrefix);
+  const localPath = path.join(localBase(), keyPrefix);
   if (!fs.existsSync(localPath)) return [];
   return fs.readdirSync(localPath).map(f => {
     const stat = fs.statSync(path.join(localPath, f));
@@ -135,4 +95,17 @@ async function listFiles(tenantSlug, prefix = '') {
   });
 }
 
-module.exports = { uploadFile, getFile, deleteFile, listFiles, getDriver };
+/**
+ * Convenience: upload a base64 data URI directly
+ * Returns the public URL
+ */
+async function uploadBase64(namespace, filename, dataUri) {
+  const matches = dataUri.match(/^data:([^;]+);base64,(.+)$/);
+  if (!matches) throw new Error('Invalid base64 data URI');
+  const [, mime, b64] = matches;
+  const buffer = Buffer.from(b64, 'base64');
+  const result = await uploadFile(namespace, filename, buffer, mime);
+  return result.url;
+}
+
+module.exports = { uploadFile, getFile, deleteFile, listFiles, uploadBase64, getDriver };

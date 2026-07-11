@@ -786,25 +786,50 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // ─── QRIS Image Upload (base64) ──────────────────────────────
+// ─── Generic media upload (S3) ────────────────────────────────
+const { uploadBase64, uploadFile: storageUpload } = require('./services/storage');
+
+// POST /api/media/upload — base64 image → S3, returns URL
+// Body: { image: "data:image/...;base64,...", namespace?: "qris"|"logo"|"favicon"|"ticket", filename?: "custom.png" }
+app.post('/api/media/upload', superadminAuth, async (req, res) => {
+  try {
+    const { image, namespace = 'uploads', filename: customName, setting_key } = req.body;
+    if (!image) return res.status(400).json({ error: 'image wajib (base64 data URI)' });
+
+    const matches = image.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) return res.status(400).json({ error: 'Format tidak valid — gunakan data URI base64' });
+
+    const [, mime, b64] = matches;
+    const buffer = Buffer.from(b64, 'base64');
+    if (buffer.length > 5 * 1024 * 1024) return res.status(400).json({ error: 'Maksimal 5MB' });
+
+    const ext = mime.split('/')[1]?.replace('jpeg','jpg') || 'bin';
+    const fname = customName || `${namespace}-${Date.now()}.${ext}`;
+    const result = await storageUpload(namespace, fname, buffer, mime);
+
+    // Optionally save to settings
+    if (setting_key) {
+      await db.query(
+        'INSERT INTO system_settings (setting_key, setting_value) VALUES (?,?) ON DUPLICATE KEY UPDATE setting_value=?',
+        [setting_key, result.url, result.url]
+      );
+    }
+
+    res.json({ success: true, url: result.url, key: result.key, driver: result.driver });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// POST /api/media/upload-qris — backward compat, forwards to /api/media/upload
 app.post('/api/media/upload-qris', superadminAuth, async (req, res) => {
   try {
     const { image } = req.body;
     if (!image) return res.status(400).json({ error: 'Data gambar diperlukan' });
-    const matches = image.match(/^data:image\/(png|jpeg|jpg|gif|webp);base64,(.+)$/);
-    if (!matches) return res.status(400).json({ error: 'Format gambar tidak valid. Gunakan PNG/JPEG base64' });
-    const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
-    const buffer = Buffer.from(matches[2], 'base64');
-    if (buffer.length > 2 * 1024 * 1024) return res.status(400).json({ error: 'Ukuran gambar maksimal 2MB' });
-    const filename = `qris-${Date.now()}.${ext}`;
-    const uploadDir = path.join(__dirname, 'public', 'uploads', 'qris');
-    fs.mkdirSync(uploadDir, { recursive: true });
-    fs.writeFileSync(path.join(uploadDir, filename), buffer);
-    const url = '/uploads/qris/' + filename;
+    const result = await storageUpload('qris', `qris-${Date.now()}.jpg`, Buffer.from(image.split(',')[1] || image, 'base64'), 'image/jpeg');
     await db.query(
       "INSERT INTO system_settings (setting_key, setting_value) VALUES ('payment_qris_image', ?) ON DUPLICATE KEY UPDATE setting_value=?",
-      [url, url]
+      [result.url, result.url]
     );
-    res.json({ success: true, url });
+    res.json({ success: true, url: result.url });
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
