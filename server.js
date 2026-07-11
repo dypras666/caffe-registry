@@ -434,7 +434,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     if (!email || !password) return res.status(400).json({ error: 'Email dan password wajib' });
 
     const [tenants] = await db.query(
-      "SELECT * FROM tenants WHERE admin_email = ? AND status IN ('active','suspended')",
+      "SELECT * FROM tenants WHERE admin_email = ? AND status != 'inactive'",
       [email]
     );
     if (!tenants.length) return res.status(401).json({ error: 'Email atau password salah' });
@@ -488,6 +488,7 @@ const serversRouter = require('./routes/servers');
 const autoscalerRouter = require('./routes/autoscaler');
 const billingRouter = require('./routes/billing');
 const paymentRouter = require('./routes/payment');
+const topupRouter = require('./routes/topup');
 const settingsRouter = require('./routes/settings');
 const queueRouter = require('./routes/queue');
 const { startAutoScaler } = require('./services/autoscaler');
@@ -498,6 +499,7 @@ const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/e
 app.use('/api/servers', serversRouter);
 app.use('/api/autoscaler', autoscalerRouter);
 app.use('/api/payment', paymentRouter);
+app.use('/api/topup', topupRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/queue', queueRouter);

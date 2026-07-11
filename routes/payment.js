@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
-const { superadminAuth, tenantAuth } = require('./auth');
+const { superadminAuth, tenantAuth } = require('../services/auth');
 
 // GET /api/payment/methods — active payment methods (public/tenant)
 router.get('/methods', async (req, res) => {
