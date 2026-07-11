@@ -7,25 +7,44 @@ const { superadminAuth } = require('../services/auth');
 
 // ==================== SYSTEM SETTINGS ====================
 
-// GET /api/settings — all settings
-router.get('/', superadminAuth, async (req, res) => {
+// GET /api/settings — returns array format for frontend + public GET without auth
+router.get('/', async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT setting_key, setting_value, description FROM system_settings ORDER BY setting_key');
-    const settings = {};
-    for (const r of rows) settings[r.setting_key] = { value: r.setting_value, description: r.description };
-    res.json(settings);
+    // Check if superadmin — return all; else return only public
+    let rows;
+    const authHeader = req.headers.authorization;
+    let isAdmin = false;
+    if (authHeader) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const { getSecret } = require('../services/auth');
+        const decoded = jwt.verify(authHeader.replace('Bearer ', ''), getSecret());
+        isAdmin = decoded.role === 'superadmin';
+      } catch (_) {}
+    }
+
+    if (isAdmin) {
+      [rows] = await db.query('SELECT * FROM system_settings ORDER BY setting_group, setting_key');
+    } else {
+      [rows] = await db.query('SELECT id, setting_key, setting_value, setting_type, setting_group, label FROM system_settings WHERE is_public=1 ORDER BY setting_group, setting_key');
+    }
+
+    res.json({ settings: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// PUT /api/settings — batch update settings
+// PUT /api/settings — batch update { settings: [{key,value}] }
 router.put('/', superadminAuth, async (req, res) => {
   try {
-    for (const [key, value] of Object.entries(req.body)) {
+    const items = req.body.settings || Object.entries(req.body).map(([key, value]) => ({ key, value }));
+    for (const item of items) {
+      const key = item.key || item.setting_key;
+      const value = String(item.value ?? item.setting_value ?? '');
       await db.query(
-        'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-        [key, String(value), String(value)]
+        'INSERT INTO system_settings (setting_key, setting_value) VALUES (?,?) ON DUPLICATE KEY UPDATE setting_value=?',
+        [key, value, value]
       );
     }
     res.json({ success: true });
