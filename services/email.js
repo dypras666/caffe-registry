@@ -85,31 +85,50 @@ async function loadProviders() {
   return [];
 }
 
-async function sendMail({ to, subject, template, vars, from }) {
-  const providers = await loadProviders();
+async function sendViaResend(html, { to, subject, fromAddr }) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) throw new Error('RESEND_API_KEY not set');
 
+  const { Resend } = require('resend');
+  const resend = new Resend(apiKey);
+  const { error } = await resend.emails.send({
+    from: fromAddr,
+    to: [to],
+    subject,
+    html,
+  });
+  if (error) throw new Error(error.message || JSON.stringify(error));
+}
+
+async function sendMail({ to, subject, template, vars, from }) {
+  const html = renderTemplate(await loadTemplate(template), vars);
+
+  // Resend requires a verified domain; fallback to their default for free accounts
+  const resendFrom = process.env.RESEND_FROM || 'Caffe.id <onboarding@resend.dev>';
+  const smtpFrom = from || process.env.SMTP_FROM || 'noreply@caffe.my.id';
+  const fromAddr = smtpFrom;
+
+  const mailOpts = { from: `"Caffe.id" <${fromAddr}>`, to, subject, html };
+
+  // 1. Try Resend API first (works from any VPS, no port restrictions)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      await sendViaResend(html, { to, subject, fromAddr: resendFrom });
+      console.log(`[Email] SENT via Resend: ${subject} → ${to}`);
+      return { sent: true, provider: 'resend' };
+    } catch (err) {
+      console.warn(`[Email] Resend failed: ${err.message} — falling back to SMTP`);
+    }
+  }
+
+  // 2. Fallback to SMTP providers
+  const providers = await loadProviders();
   if (!providers.length) {
     console.log(`[Email] SKIP (no provider): ${subject} → ${to}`);
     return { skipped: true, reason: 'no provider' };
   }
 
-  // Try env-level override for from address
-  let fromAddr = from || process.env.SMTP_FROM;
-  if (!fromAddr) {
-    fromAddr = providers[0].from || 'noreply@cafeazzura.com';
-  }
-
-  const html = renderTemplate(await loadTemplate(template), vars);
-  const mailOpts = {
-    from: `"Cafe Azzura" <${fromAddr}>`,
-    to,
-    subject,
-    html,
-  };
-
-  // Sort by priority (ascending), then try each in order
   const sorted = [...providers].sort((a, b) => (a.priority || 99) - (b.priority || 99));
-
   for (const provider of sorted) {
     try {
       const transporter = createTransporter(provider);
@@ -121,7 +140,7 @@ async function sendMail({ to, subject, template, vars, from }) {
     }
   }
 
-  throw new Error(`Semua SMTP provider gagal untuk "${subject}" → ${to}`);
+  throw new Error(`Semua provider gagal untuk "${subject}" → ${to}`);
 }
 
 async function sendWelcome({ to, name, adminUrl, email, password, plan }) {
