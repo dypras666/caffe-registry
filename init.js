@@ -15,7 +15,25 @@ async function init() {
   
   await conn.query('CREATE DATABASE IF NOT EXISTS cafe_registry CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
   await conn.end();
-  
+
+  // System settings table
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS system_settings (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      setting_key VARCHAR(100) NOT NULL UNIQUE,
+      setting_value TEXT,
+      setting_type VARCHAR(30) DEFAULT 'text',
+      setting_group VARCHAR(50) DEFAULT 'general',
+      label VARCHAR(200),
+      description TEXT,
+      is_public TINYINT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_key (setting_key),
+      INDEX idx_public (is_public)
+    ) ENGINE=InnoDB
+  `);
+
   // Tenants table with pricing tiers
   await db.query(`
     CREATE TABLE IF NOT EXISTS tenants (
@@ -202,6 +220,39 @@ async function init() {
   await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspended_at DATETIME NULL").catch(() => {});
   await db.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS admin_email VARCHAR(255) NULL").catch(() => {});
   await db.query("ALTER TABLE servers ADD COLUMN IF NOT EXISTS ssh_password VARCHAR(255) NULL").catch(() => {});
+
+  // Seed SaaS landing settings (INSERT IGNORE = skip if exists)
+  const siteSettings = [
+    // site identity
+    ['site_name',        'Caffe.id',                          'text',  'general', 'Nama Situs',         1],
+    ['site_tagline',     'Platform SaaS Manajemen Kafe Modern','text', 'general', 'Tagline',            1],
+    ['site_description', 'Deploy sistem POS kafe Anda dalam hitungan menit. Multi-cabang, cloud-based, harga mulai gratis.','text','general','Deskripsi',1],
+    ['site_logo_url',    '',                                  'text',  'general', 'URL Logo',           1],
+    ['site_favicon_url', '/favicon.svg',                      'text',  'general', 'URL Favicon',        1],
+    ['site_url',         'https://caffe.my.id',               'text',  'general', 'URL Situs',          1],
+    // hero section
+    ['hero_title',       'Radical Efficiency for Modern POS', 'text',  'landing', 'Hero Title',         1],
+    ['hero_subtitle',    'Deploy sistem kafe Anda dalam hitungan menit. POS, kasir, laporan, reservasi — semua dalam satu platform cloud.','text','landing','Hero Subtitle',1],
+    ['hero_cta_primary', 'Mulai Gratis',                      'text',  'landing', 'CTA Utama',          1],
+    ['hero_cta_secondary','Lihat Demo',                       'text',  'landing', 'CTA Kedua',          1],
+    // contact & social
+    ['contact_email',    'support@caffe.my.id',               'text',  'contact', 'Email Support',      1],
+    ['contact_whatsapp', '',                                  'text',  'contact', 'WhatsApp',           1],
+    ['social_instagram', '',                                  'text',  'social',  'Instagram URL',      1],
+    ['social_facebook',  '',                                  'text',  'social',  'Facebook URL',       1],
+    // smtp
+    ['smtp_from',        'noreply@caffe.my.id',               'text',  'smtp',    'SMTP From',          0],
+    ['smtp_host',        'smtp.sumopod.com',                  'text',  'smtp',    'SMTP Host',          0],
+    ['smtp_port',        '465',                               'text',  'smtp',    'SMTP Port',          0],
+    ['smtp_user',        '',                                  'text',  'smtp',    'SMTP User',          0],
+    ['smtp_pass',        '',                                  'password','smtp',  'SMTP Password',      0],
+  ];
+  for (const [key, val, type, group, label, isPublic] of siteSettings) {
+    await db.query(
+      'INSERT IGNORE INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public) VALUES (?,?,?,?,?,?)',
+      [key, val, type, group, label, isPublic]
+    ).catch(() => {});
+  }
 
   console.log('Registry database initialized with pricing plans and tickets!');
   process.exit(0);

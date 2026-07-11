@@ -41,14 +41,31 @@ const transporter = smtpUser ? nodemailer.createTransport({
 
 // ========== PRICING PLANS ==========
 
-// Get all pricing plans
+// GET /api/pricing — public, returns all active plans
 app.get('/api/pricing', async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM pricing_plans WHERE is_active = TRUE ORDER BY price_monthly ASC');
+    const [rows] = await db.query('SELECT * FROM pricing_plans ORDER BY price_monthly ASC');
     res.json({ plans: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// PUT /api/pricing/:tier — superadmin update plan
+app.put('/api/pricing/:tier', superadminAuth, async (req, res) => {
+  try {
+    const { name, price_monthly, ram_mb, cpu_cores, disk_mb, features, is_active } = req.body;
+    const allowed = { name, price_monthly, ram_mb, cpu_cores, disk_mb, features, is_active };
+    const updates = [], values = [];
+    for (const [k, v] of Object.entries(allowed)) {
+      if (v !== undefined) { updates.push(`${k}=?`); values.push(v); }
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No fields' });
+    values.push(req.params.tier);
+    await db.query(`UPDATE pricing_plans SET ${updates.join(',')} WHERE tier=?`, values);
+    const [[plan]] = await db.query('SELECT * FROM pricing_plans WHERE tier=?', [req.params.tier]);
+    res.json({ plan });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Upgrade tenant tier
@@ -372,6 +389,32 @@ app.get('/api/superadmin/stats', superadminAuth, async (req, res) => {
 // ========== TENANT AUTH (proxy to tenant backend) ==========
 
 // Login (proxied)
+// Alias: POST /api/auth/login (for frontend compatibility)
+app.post('/api/auth/login', authLimiter, async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email dan password wajib' });
+
+    const [tenants] = await db.query(
+      "SELECT * FROM tenants WHERE admin_email = ? AND status IN ('active','suspended')",
+      [email]
+    );
+    if (!tenants.length) return res.status(401).json({ error: 'Email atau password salah' });
+
+    const bcrypt = require('bcryptjs');
+    const tenant = tenants[0];
+    if (!await bcrypt.compare(password, tenant.admin_password)) {
+      return res.status(401).json({ error: 'Email atau password salah' });
+    }
+
+    const token = jwt.sign(
+      { tenantId: tenant.id, slug: tenant.slug, role: 'owner', email: tenant.admin_email, pricing_tier: tenant.pricing_tier },
+      JWT_SECRET(), { expiresIn: '7d' }
+    );
+    res.json({ token, user: { id: tenant.id, email: tenant.admin_email, role: 'owner', slug: tenant.slug, pricing_tier: tenant.pricing_tier } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/tenant/:slug/login', authLimiter, async (req, res) => {
   try {
     const { slug } = req.params;
