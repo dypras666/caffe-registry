@@ -27,7 +27,7 @@ jobs:
           npm ci
           npm run build
 
-      - name: SCP UI to VPS
+      - name: SCP public/ to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -36,6 +36,7 @@ jobs:
           source: cafe-saas/public/index.html,cafe-saas/public/assets/,cafe-saas/public/favicon.svg,cafe-saas/public/robots.txt,cafe-saas/public/sitemap.xml
           target: /opt/cafe-registry/public/
           strip_components: 2
+          timeout: 30s
 
       - name: Deploy backend
         uses: appleboy/ssh-action@v1.0.3
@@ -44,11 +45,5 @@ jobs:
           username: root
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd /opt/cafe-registry
-            git fetch origin main
-            git reset --hard origin/main
-            npm install --production
-            pkill -f "node server.js" 2>/dev/null || true
-            sleep 1
-            PORT=3001 nohup node server.js >> /var/log/cafe-registry.log 2>&1 &
-            echo "Deploy OK"
+            cd /opt/cafe-registry && git fetch origin main && git reset --hard origin/main && npm install --production 2>&1 && pkill -f "node server.js" 2>/dev/null; sleep 1; PORT=3001 nohup node server.js >> /var/log/cafe-registry.log 2>&1 & sleep 2; pid=$!; if kill -0 $pid 2>/dev/null; then echo "Deploy OK"; else echo "FAIL"; exit 1; fi
+          timeout: 60s
