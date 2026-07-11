@@ -201,15 +201,9 @@ async function init() {
     )
   `);
 
-  // Seed default payment methods
+  // Seed default payment methods (only QRIS by default — admin adds bank accounts via dashboard)
   const defaultMethods = [
-    ['BCA Transfer', 'bank_transfer', 'PT Cafe Azzura', '1234567890', 'BCA', 'account_balance', 'Transfer ke rekening BCA a.n PT Cafe Azzura', 1, 1],
-    ['Mandiri Transfer', 'bank_transfer', 'PT Cafe Azzura', '9876543210', 'Mandiri', 'account_balance', 'Transfer ke rekening Mandiri a.n PT Cafe Azzura', 1, 2],
-    ['BRI Transfer', 'bank_transfer', 'PT Cafe Azzura', '5678901234', 'BRI', 'account_balance', 'Transfer ke rekening BRI a.n PT Cafe Azzura', 1, 3],
-    ['GoPay', 'e_wallet', 'Cafe Azzura', '08123456789', 'Gojek', 'account_balance_wallet', 'Pembayaran via GoPay', 1, 4],
-    ['OVO', 'e_wallet', 'Cafe Azzura', '08123456789', 'OVO', 'account_balance_wallet', 'Pembayaran via OVO', 1, 5],
-    ['DANA', 'e_wallet', 'Cafe Azzura', '08123456789', 'DANA', 'account_balance_wallet', 'Pembayaran via DANA', 1, 6],
-    ['QRIS', 'qris', '', '', 'QRIS', 'qr_code', 'Scan QRIS via aplikasi pembayaran apapun', 1, 7],
+    ['QRIS', 'qris', '', '', 'QRIS', 'qr_code', 'Scan QRIS via aplikasi pembayaran apapun', 1, 0],
   ];
   for (const m of defaultMethods) {
     await db.query(
@@ -236,6 +230,97 @@ async function init() {
       INDEX idx_status (status)
     )
   `);
+
+  // Topup requests table (manual payment flow with proof upload + unique code)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS topup_requests (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tenant_id INT NOT NULL,
+      amount INT NOT NULL,
+      unique_code SMALLINT NOT NULL DEFAULT 0,
+      transfer_amount INT NOT NULL DEFAULT 0,
+      payment_method_id INT,
+      status ENUM('pending','confirmed','rejected') DEFAULT 'pending',
+      auto_confirmed BOOLEAN DEFAULT FALSE,
+      matched_ref VARCHAR(100) NULL,
+      proof_url VARCHAR(500) NULL,
+      notes TEXT NULL,
+      confirmed_by INT NULL,
+      confirmed_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+      FOREIGN KEY (payment_method_id) REFERENCES payment_methods(id),
+      INDEX idx_tenant (tenant_id),
+      INDEX idx_status (status),
+      INDEX idx_transfer_amount (transfer_amount, status)
+    )
+  `);
+  // Migrations for existing topup_requests tables
+  try { await db.query('ALTER TABLE topup_requests ADD COLUMN unique_code SMALLINT NOT NULL DEFAULT 0'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD COLUMN transfer_amount INT NOT NULL DEFAULT 0'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD COLUMN auto_confirmed BOOLEAN DEFAULT FALSE'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD COLUMN matched_ref VARCHAR(100) NULL'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD COLUMN qris_expires_at DATETIME NULL'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD INDEX idx_transfer_amount (transfer_amount, status)'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD UNIQUE KEY uk_transfer_date (transfer_amount, DATE(created_at))'); } catch (e) {}
+
+  // BCA Merchant QRIS config (one row per slot, max 1 for now)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bca_merchant_config (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      label VARCHAR(100) NOT NULL DEFAULT 'BCA QRIS',
+      email_enc TEXT NOT NULL,
+      password_enc TEXT NOT NULL,
+      default_mid VARCHAR(50) NULL,
+      is_active BOOLEAN DEFAULT TRUE,
+      last_sync_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+
+  // BCA QRIS outlets cache
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bca_qris_outlets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      config_id INT NOT NULL,
+      mid VARCHAR(50) NOT NULL,
+      name VARCHAR(200) NOT NULL,
+      nmid VARCHAR(100),
+      qris_image_url VARCHAR(500),
+      is_default BOOLEAN DEFAULT FALSE,
+      raw_data JSON,
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_config_mid (config_id, mid),
+      INDEX idx_config (config_id)
+    )
+  `);
+
+  // BCA mutation log
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bca_mutation_log (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      config_id INT NOT NULL,
+      mid VARCHAR(50) NOT NULL,
+      reference_number VARCHAR(100),
+      amount BIGINT NOT NULL,
+      date VARCHAR(20) NOT NULL,
+      payment_method VARCHAR(100),
+      payer_name VARCHAR(200),
+      payer_phone VARCHAR(50),
+      approval_code VARCHAR(100),
+      raw_data JSON,
+      fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_config_mid (config_id, mid),
+      INDEX idx_date (date),
+      INDEX idx_ref (reference_number)
+    )
+  `);
+
+  // Link payment method to BCA config (for QRIS BCA auto-check)
+  try { await db.query('ALTER TABLE payment_methods ADD COLUMN bca_config_id INT NULL'); } catch (e) {}
+  try { await db.query('ALTER TABLE payment_methods ADD COLUMN qris_type ENUM("static","bca") DEFAULT "static"'); } catch (e) {}
 
   // Add balance column if missing (migration for existing DBs)
   try { await db.query('ALTER TABLE tenants ADD COLUMN balance INT DEFAULT 0'); } catch (e) {}

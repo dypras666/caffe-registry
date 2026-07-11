@@ -26,7 +26,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://static.cloudflareinsights.com'],
+      scriptSrcAttr: ["'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://fonts.googleapis.com'],
       imgSrc: [
@@ -511,9 +512,11 @@ const autoscalerRouter = require('./routes/autoscaler');
 const billingRouter = require('./routes/billing');
 const paymentRouter = require('./routes/payment');
 const topupRouter = require('./routes/topup');
+const bcaRouter = require('./routes/bca');
 const settingsRouter = require('./routes/settings');
 const queueRouter = require('./routes/queue');
 const backupRouter = require('./routes/backup');
+const addonsRouter = require('./routes/addons');
 const { startAutoScaler } = require('./services/autoscaler');
 const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/email');
 
@@ -521,12 +524,14 @@ const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/e
 
 app.use('/api/servers', serversRouter);
 app.use('/api/autoscaler', autoscalerRouter);
+app.use('/api/bca', bcaRouter);
 app.use('/api/payment', paymentRouter);
 app.use('/api/topup', topupRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/queue', queueRouter);
 app.use('/api/backup', backupRouter);
+app.use('/api/addons', addonsRouter);
 
 startAutoScaler();
 
@@ -622,7 +627,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
 app.get('/api/tenant/:id/status', tenantAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT id, name, slug, status, pricing_tier, admin_url, admin_email, ram_mb, cpu_cores, disk_mb, created_at FROM tenants WHERE id = ?',
+      'SELECT id, name, slug, status, container_status, pricing_tier, admin_url, admin_email, ram_mb, cpu_cores, disk_mb, custom_domain, created_at FROM tenants WHERE id = ?',
       [req.params.id]
     );
     
@@ -670,6 +675,35 @@ app.get('/api/tenant/:id/logs', tenantAuth, async (req, res) => {
     const lines = parseInt(req.query.lines) || 100;
     const logs = await getTenantLogs(t.slug, lines);
     res.json({ logs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Custom domain
+app.put('/api/tenant/:id/domain', tenantAuth, async (req, res) => {
+  try {
+    const { custom_domain } = req.body;
+    if (!custom_domain || typeof custom_domain !== 'string') {
+      return res.status(400).json({ error: 'custom_domain required' });
+    }
+    await db.query('UPDATE tenants SET custom_domain = ? WHERE id = ?', [custom_domain.trim(), req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reset container password
+app.post('/api/tenant/:id/reset-password', tenantAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const crypto = require('crypto');
+    const newPassword = crypto.randomBytes(12).toString('hex');
+    await db.query('UPDATE tenants SET container_password = ? WHERE id = ?', [newPassword, req.params.id]);
+    // TODO: actual container password update via provisioner
+    res.json({ success: true, new_password: newPassword });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -947,6 +981,60 @@ app.post('/api/payment/test/tripay', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
+// POST /api/payment/test/duitku — test connection & create dummy transaction
+app.post('/api/payment/test/duitku', superadminAuth, async (req, res) => {
+  try {
+    const cfg = await getSettings('payment_duitku_');
+    if (!cfg.payment_duitku_api_key || !cfg.payment_duitku_merchant_code) {
+      return res.status(400).json({ error: 'Konfigurasi Duitku belum lengkap (Merchant Code & API Key)' });
+    }
+    const isProd = cfg.payment_duitku_is_production === '1';
+    const baseUrl = isProd ? 'https://passport.duitku.com' : 'https://sandbox.duitku.com';
+    const merchantCode = cfg.payment_duitku_merchant_code;
+    const apiKey = cfg.payment_duitku_api_key;
+
+    // Create dummy transaction
+    const orderId = 'TEST-' + Date.now();
+    const amount = 10000;
+    // Duitku signature: sha256(merchantCode + amount + merchantOrderId + apiKey)
+    const signature = crypto
+      .createHash('sha256')
+      .update(merchantCode + amount + orderId + apiKey)
+      .digest('hex');
+
+    const duitkuBody = {
+      merchantCode: merchantCode,
+      paymentAmount: amount,
+      merchantOrderId: orderId,
+      productDetails: 'Test Payment',
+      email: 'test@example.com',
+      phoneNumber: '080000000000',
+      callbackUrl: `${process.env.SITE_URL || 'https://caffe.id'}/api/topup/duitku-callback`,
+      returnUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
+      signature: signature,
+    };
+
+    const duitkuRes = await fetch(baseUrl + '/webapi/api/merchant/v1/inquiry/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(duitkuBody),
+    });
+    const duitkuResult = await duitkuRes.json();
+
+    if (!duitkuRes.ok || duitkuResult.statusCode !== '00') {
+      return res.json({ success: false, message: duitkuResult.statusMessage || 'Gagal membuat transaksi Duitku', detail: duitkuResult });
+    }
+
+    res.json({
+      success: true,
+      message: 'Koneksi ke Duitku berhasil',
+      payment_url: duitkuResult.paymentUrl,
+      reference: duitkuResult.reference,
+      order_id: orderId,
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
 // POST /api/payment/test/callback — simulate test callback from gateway
 app.post('/api/payment/test/callback', superadminAuth, async (req, res) => {
   try {
@@ -961,6 +1049,90 @@ app.post('/api/payment/test/callback', superadminAuth, async (req, res) => {
       },
     });
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// ─── Midtrans Notification Webhook ─────────────────────────────
+// Midtrans sends POST with JSON body { transaction_status, order_id, ... }
+// Use express.raw() or express.json() — already configured for JSON
+app.post('/api/payment/midtrans/notification', async (req, res) => {
+  try {
+    const notif = req.body;
+    const orderId = notif.order_id;
+
+    // Find the topup request by snap_order_id
+    const [[reqRow]] = await db.query(
+      'SELECT * FROM topup_requests WHERE snap_order_id = ? AND status = ?',
+      [orderId, 'pending']
+    );
+    if (!reqRow) {
+      // Maybe already confirmed — still respond OK to Midtrans
+      return res.status(200).json({ status: 'ignored', message: 'Request not found or already processed' });
+    }
+
+    const transactionStatus = notif.transaction_status;
+    const fraudStatus = notif.fraud_status;
+
+    let confirmed = false;
+
+    // Transaction success conditions
+    if (transactionStatus === 'capture') {
+      // capture hanya untuk credit card
+      if (fraudStatus === 'accept') confirmed = true;
+    } else if (transactionStatus === 'settlement') {
+      // settlement untuk transfer bank, VA
+      confirmed = true;
+    }
+
+    if (confirmed) {
+      const depositAmount = reqRow.transfer_amount || reqRow.amount;
+
+      const { confirmTopup } = require('./routes/topup');
+      // confirmTopup needs to be accessible — inline it since it's in the same file scope
+      // Actually we just call it via db directly
+
+      await db.query(
+        'UPDATE tenants SET balance = balance + ? WHERE id = ?',
+        [depositAmount, reqRow.tenant_id]
+      );
+      await db.query(
+        `UPDATE topup_requests SET status = 'confirmed', confirmed_at = NOW(),
+         auto_confirmed = 1, matched_ref = ? WHERE id = ?`,
+        [notif.transaction_id || orderId, reqRow.id]
+      );
+
+      // Queue email
+      const [[tenant]] = await db.query(
+        'SELECT admin_email, name, slug FROM tenants WHERE id = ?',
+        [reqRow.tenant_id]
+      );
+      if (tenant?.admin_email) {
+        const queue = require('./services/queue');
+        queue.enqueue('email.topup_confirm', {
+          to: tenant.admin_email,
+          name: tenant.name || tenant.slug,
+          amount: depositAmount,
+          balance: depositAmount,
+          slug: tenant.slug,
+        }).catch(() => {});
+      }
+
+      console.log(`[Midtrans] Topup #${reqRow.id} confirmed via notification: ${depositAmount}`);
+      res.status(200).json({ status: 'confirmed' });
+    } else {
+      // Mark as pending payment (might be expired/denied/etc)
+      if (['deny', 'cancel', 'expire', 'failure'].includes(transactionStatus)) {
+        await db.query(
+          "UPDATE topup_requests SET status = 'expired', notes = ? WHERE id = ?",
+          [`Midtrans: ${transactionStatus}`, reqRow.id]
+        );
+      }
+      res.status(200).json({ status: transactionStatus, fraud: fraudStatus });
+    }
+  } catch (e) {
+    console.error('[Midtrans Notification Error]', e);
+    // Always return 200 to Midtrans
+    res.status(200).json({ status: 'error', message: e.message });
+  }
 });
 
 function safeError(err) {
@@ -1002,4 +1174,12 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Registry running on http://0.0.0.0:${PORT}`);
+});
+
+// Global error handlers
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });

@@ -156,7 +156,7 @@ router.post('/', superadminAuth, async (req, res) => {
 // PUT /api/servers/:id — update server
 router.put('/:id', superadminAuth, async (req, res) => {
   try {
-    const fields = ['hostname', 'ip_address', 'ssh_port', 'ssh_user', 'ssh_key_path', 'max_tenants', 'region', 'status', 'labels'];
+    const fields = ['hostname', 'ip_address', 'ssh_port', 'ssh_user', 'ssh_key_path', 'ssh_password', 'max_tenants', 'region', 'status', 'labels'];
     const updates = [];
     const values = [];
 
@@ -292,15 +292,110 @@ router.get('/:id/logs', superadminAuth, async (req, res) => {
 // DELETE /api/servers/:id — decommission
 router.delete('/:id', superadminAuth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT id, current_tenants FROM servers WHERE id = ?', [req.params.id]);
+    const [rows] = await db.query('SELECT id FROM servers WHERE id = ?', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Server not found' });
-    if (rows[0].current_tenants > 0) return res.status(400).json({ error: 'Server masih memiliki tenant. Drain terlebih dahulu.' });
 
-    await db.query("UPDATE servers SET status = 'inactive' WHERE id = ?", [req.params.id]);
-    res.json({ success: true, message: 'Server dinonaktifkan' });
+    // Check if any tenants assigned
+    const [tenants] = await db.query("SELECT COUNT(*) AS cnt FROM tenants WHERE server_id = ? AND status NOT IN ('inactive','failed')", [req.params.id]);
+    if (tenants[0].cnt > 0) return res.status(400).json({ error: 'Server masih memiliki tenant. Pindahkan tenant dulu.' });
+
+    await db.query('DELETE FROM servers WHERE id = ?', [req.params.id]);
+    res.json({ success: true, message: 'Server dihapus' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// POST /api/servers/:id/activate — set active
+router.post('/:id/activate', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT id FROM servers WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Server not found' });
+    await db.query("UPDATE servers SET status = 'active' WHERE id = ?", [req.params.id]);
+    res.json({ success: true, message: 'Server diaktifkan' });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// POST /api/servers/:id/deactivate — set inactive
+router.post('/:id/deactivate', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT id FROM servers WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Server not found' });
+    await db.query("UPDATE servers SET status = 'inactive' WHERE id = ?", [req.params.id]);
+    res.json({ success: true, message: 'Server dinonaktifkan' });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// POST /api/servers/:id/refresh — ping server, detect OS, update stats live
+router.post('/:id/refresh', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM servers WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Server not found' });
+    const s = rows[0];
+    if (!s.ip_address) return res.status(400).json({ error: 'No IP address' });
+
+    const { execSync } = require('child_process');
+    const user = s.ssh_user || 'root';
+    const port = s.ssh_port || 22;
+    const opts = '-o StrictHostKeyChecking=no -o ConnectTimeout=10';
+    let prefix;
+    if (s.ssh_password) {
+      const esc = s.ssh_password.replace(/\\/g,'\\\\\\\\').replace(/'/g,"'\\''").replace(/"/g,'\\\\"').replace(/`/g,'\\\\`').replace(/\$/g,'\\\\$');
+      prefix = `sshpass -p '${esc}' ssh ${opts} ${user}@${s.ip_address} -p ${port}`;
+    } else {
+      prefix = `ssh ${opts} -i ${s.ssh_key_path || '~/.ssh/id_rsa'} ${user}@${s.ip_address} -p ${port}`;
+    }
+
+    const script = Buffer.from(
+`echo "OS=$(cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' | cut -d= -f2 | tr -d '\"')"
+echo "CPU=$(nproc)"
+echo "RAM_TOTAL=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+echo "RAM_USED=$(awk '/MemTotal/{t=$2} /MemFree/{f=$2} /Cached/{c=$2} /Buffers/{b=$2} END{print t-f-c-b}' /proc/meminfo)"
+echo "DISK_TOTAL=$(df -m / | tail -1 | awk '{print $2}')"
+echo "DISK_USED=$(df -m / | tail -1 | awk '{print $3}')"
+echo "DOCKER=$(docker --version 2>/dev/null || echo 'none')"
+echo "HOSTNAME=$(hostname -f 2>/dev/null || hostname)"`
+    ).toString('base64');
+
+    const out = execSync(`${prefix} "echo ${script} | base64 -d | bash"`, { encoding: 'utf8', timeout: 15000 });
+    const data = {};
+    for (const line of out.split('\n')) {
+      const m = line.match(/^(\w+)=(.+)/);
+      if (m) data[m[1]] = m[2].trim();
+    }
+
+    const ramTotal = parseInt(data.RAM_TOTAL) || 0;
+    const ramUsed = parseInt(data.RAM_USED) || 0;
+    const diskTotal = parseInt(data.DISK_TOTAL) || 0;
+    const diskUsed = parseInt(data.DISK_USED) || 0;
+    const cpuCores = parseFloat(data.CPU) || 0;
+    const osName = data.OS || s.os || null;
+
+    await db.query(`
+      UPDATE servers SET
+        used_ram_mb = ?, used_disk_mb = ?, total_ram_mb = ?,
+        total_cpu_cores = ?, total_disk_mb = ?,
+        docker_version = ?, os = ?,
+        hostname = COALESCE(NULLIF(?, ''), hostname),
+        last_heartbeat = NOW(), status = 'active'
+      WHERE id = ?
+    `, [
+      Math.round(ramUsed / 1024), diskUsed, Math.round(ramTotal / 1024),
+      cpuCores, diskTotal, data.DOCKER || null, osName,
+      data.HOSTNAME || null, req.params.id
+    ]);
+
+    // Count containers for CPU estimate
+    try {
+      const cOut = execSync(`${prefix} "docker ps -q 2>/dev/null | wc -l"`, { encoding: 'utf8', timeout: 5000 }).trim();
+      const cc = parseInt(cOut) || 0;
+      const usedCpu = Math.min(Math.max(cc * 0.1, 0.25), cpuCores * 0.9);
+      await db.query('UPDATE servers SET used_cpu_cores = ? WHERE id = ?', [usedCpu, req.params.id]);
+    } catch {}
+
+    const [updated] = await db.query('SELECT * FROM servers WHERE id = ?', [req.params.id]);
+    res.json({ success: true, server: updated[0] });
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 module.exports = router;

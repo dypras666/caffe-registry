@@ -43,17 +43,24 @@ async function getTenantConfig(slug) {
 function extractTenantSlug(host) {
   if (!host) return null;
   host = host.split(':')[0];
-  
-  const domain = process.env.APP_DOMAIN || 'caffe.id';
+
+  // Support both caffe.id and caffe.my.id
+  const domains = ['caffe.my.id', 'caffe.id'];
+  let matched = null;
+  for (const d of domains) {
+    if (host.endsWith(`.${d}`)) { matched = d; break; }
+  }
+  if (!matched) return null;
+
   if (host.startsWith('office-')) {
     return {
-      slug: host.replace('office-', '').replace(`.${domain}`, ''),
+      slug: host.replace('office-', '').replace(`.${matched}`, ''),
       type: 'admin'
     };
   }
 
   return {
-    slug: host.replace(`.${domain}`, ''),
+    slug: host.replace(`.${matched}`, ''),
     type: 'ui'
   };
 }

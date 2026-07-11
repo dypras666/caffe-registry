@@ -178,18 +178,35 @@ queue.register('billing.check_warnings', async () => {
   await queue.enqueue('billing.check_warnings', {}, { runAt: in6h });
 });
 
-// ─── Backup: auto database backup ─────────────────────────────
-queue.register('backup.database', async (_payload, job) => {
-  const backupSvc = require('./backup');
-  console.log(`[Queue] backup.database starting...`);
-  const result = await backupSvc.runBackup();
-  console.log(`[Queue] backup.database: ${result.success_count}/${result.total} databases backed up, ${result.deleted || 0} old backups cleaned`);
+// ─── BCA: scan pending topup requests vs mutations ────────────
+queue.register('bca.scan_topup', async () => {
+  const today = new Date().toISOString().split('T')[0];
 
-  // Reschedule daily at midnight
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(0, 0, 5, 0);
-  await queue.enqueue('backup.database', {}, { runAt: tomorrow });
+  // Skip if no pending topup requests today
+  const [[{ cnt }]] = await db.query(
+    "SELECT COUNT(*) AS cnt FROM topup_requests WHERE status='pending' AND DATE(created_at) = ?",
+    [today]
+  );
+  if (parseInt(cnt) === 0) {
+    // Reschedule and exit
+    const in5m = new Date(Date.now() + 5 * 60 * 1000);
+    await queue.enqueue('bca.scan_topup', {}, { runAt: in5m, maxAttempts: 1 });
+    return;
+  }
+
+  try {
+    const { scanAndConfirmAll } = require('../routes/topup');
+    const confirmed = await scanAndConfirmAll();
+    if (confirmed.length > 0) {
+      console.log(`[BCA Scan] Auto-confirmed ${confirmed.length} topup(s):`, confirmed.map(c => `#${c.id} Rp${c.amount}`).join(', '));
+    }
+  } catch (e) {
+    console.warn('[BCA Scan] Skipped:', e.message);
+  }
+
+  // Always reschedule every 5 minutes
+  const in5m = new Date(Date.now() + 5 * 60 * 1000);
+  await queue.enqueue('bca.scan_topup', {}, { runAt: in5m, maxAttempts: 1 });
 });
 
 module.exports = {}; // side-effects only — handlers auto-registered above

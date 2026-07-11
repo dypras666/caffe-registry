@@ -178,19 +178,15 @@ async function scheduleRecurring() {
     await enqueue('billing.check_warnings', {}, { runAt: in6h });
   }
 
-  // Database backup — daily at midnight + 5 min (after billing deduct)
-  const tomorrowBackup = new Date();
-  tomorrowBackup.setDate(tomorrowBackup.getDate() + 1);
-  tomorrowBackup.setHours(0, 5, 0, 0);
-
-  const [backup] = await db.query(
-    "SELECT id FROM job_queue WHERE type='backup.database' AND status='pending' AND DATE(run_at)=DATE(?)",
-    [tomorrowBackup]
+  // BCA mutation scan — every 5 minutes (only if pending topup requests exist today)
+  const [bcaScan] = await db.query(
+    "SELECT id FROM job_queue WHERE type='bca.scan_topup' AND status='pending' AND run_at > NOW()"
   );
-  if (!backup.length) {
-    await enqueue('backup.database', {}, { runAt: tomorrowBackup });
-    console.log('[Queue] Scheduled backup.database for', tomorrowBackup.toISOString());
+  if (!bcaScan.length) {
+    const in5m = new Date(Date.now() + 5 * 60 * 1000);
+    await enqueue('bca.scan_topup', {}, { runAt: in5m, maxAttempts: 1 });
   }
+
 }
 
 // ─── Queue stats ──────────────────────────────────────────────
