@@ -442,7 +442,7 @@ async function restartTenant(slug) {
       sshRun(server[0], `docker restart ${tenant.container_id}`);
     }
   } else {
-    run(`cd ${backendDir} && pkill -f "PORT=${tenant.backend_port}" 2>/dev/null; PORT=${tenant.backend_port} nohup node server.js > /var/log/tenant-${slug}.log 2>&1 &`);
+    run(`cd ${backendDir} && pkill -f "node server.*PORT=${tenant.backend_port}" 2>/dev/null || true; sleep 1; PORT=${tenant.backend_port} nohup node server.js > /var/log/tenant-${slug}.log 2>&1 &`);
     run(`sleep 2`);
   }
 
