@@ -63,21 +63,21 @@ router.post('/request', tenantAuth, async (req, res) => {
     if (!payment_method_id) return res.status(400).json({ error: 'Pilih metode pembayaran' });
 
     // Get payment method type
-    const [[pm]] = await db.query('SELECT type, qris_type FROM payment_methods WHERE id = ?', [payment_method_id]);
+    const [[pm]] = await db.query('SELECT type, qris_type, use_unique_code FROM payment_methods WHERE id = ?', [payment_method_id]);
     if (!pm) return res.status(400).json({ error: 'Metode pembayaran tidak ditemukan' });
 
     // Gateway types (midtrans, tripay, duitku) don't need unique code — they use their own payment flow
     const isGateway = ['midtrans', 'tripay', 'duitku', 'virtual_account'].includes(pm.type);
 
     let unique_code = 0;
+    // Cek unique code dari DB (bisa toggle per method)
+    const useCode = pm.use_unique_code === 1 || pm.use_unique_code === undefined;
     let transfer_amount = amount;
-    let qris_expires_at = null;
 
-    if (isGateway) {
-      // No unique code needed for gateways
-    } else {
-      unique_code = await generateUniqueCode(amount);
-      transfer_amount = amount + unique_code;
+    if (useCode) {
+      const usedCodes = await getUsedCodesToday(db);
+      unique_code = await generateUniqueCode(usedCodes);
+      if (unique_code) transfer_amount = amount + unique_code;
     }
 
     // Set QRIS expiry (+5 min from now) for BCA QRIS

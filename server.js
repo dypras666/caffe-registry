@@ -1386,43 +1386,24 @@ app.post('/api/ai/chat', async (req, res) => {
     return res.status(503).json({ error: 'AI not configured' });
   }
 
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 20000); // 20s hard timeout
+
   try {
     const aiBase = process.env.AI_BASE_URL || 'https://api.anthropic.com/v1';
+    const model = process.env.AI_MODEL || 'commandcode';
     const isOpenAICompat = !aiBase.includes('anthropic.com');
 
-    let body, headers;
-    if (isOpenAICompat) {
-      // OpenAI-compatible endpoint
-      body = JSON.stringify({
-        model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
-        max_tokens: 512,
-        messages: [
-          { role: 'system', content: system || '' },
-          ...messages.slice(-10),
-        ],
-      });
-      headers = {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      };
-    } else {
-      body = JSON.stringify({
-        model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
-        max_tokens: 512,
-        system: system || '',
-        messages: messages.slice(-10),
-      });
-      headers = {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      };
-    }
+    const reqBody = isOpenAICompat
+      ? { model, max_tokens: 300, stream: true, messages: [{ role: 'system', content: system || '' }, ...messages.slice(-6)] }
+      : { model, max_tokens: 300, system: system || '', messages: messages.slice(-6) };
+
+    const headers = isOpenAICompat
+      ? { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
+      : { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };
 
     const response = await fetch(`${aiBase}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body,
+      method: 'POST', headers, body: JSON.stringify(reqBody), signal: abort.signal,
     });
 
     if (!response.ok) {
@@ -1430,30 +1411,32 @@ app.post('/api/ai/chat', async (req, res) => {
       throw new Error(`HTTP ${response.status}: ${errText.slice(0, 200)}`);
     }
 
-    const contentType = response.headers.get('content-type') || '';
+    // Stream-read the response body chunk by chunk, parse SSE
     let reply = '';
+    let buf = '';
+    const decoder = new TextDecoder();
 
-    if (contentType.includes('text/event-stream')) {
-      // Parse SSE streaming response — accumulate all content delta chunks
-      const text = await response.text();
-      const lines = text.split('\n');
+    for await (const chunk of response.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop(); // keep incomplete last line
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6).trim();
-        if (raw === '[DONE]') break;
+        if (raw === '[DONE]') { buf = ''; break; }
         try {
-          const chunk = JSON.parse(raw);
-          const delta = chunk.choices?.[0]?.delta?.content || '';
-          reply += delta;
-        } catch { /* skip malformed */ }
+          const parsed = JSON.parse(raw);
+          reply += parsed.choices?.[0]?.delta?.content
+            || parsed.content?.[0]?.delta?.text
+            || '';
+        } catch { /* skip */ }
       }
-    } else {
-      const data = await response.json();
-      reply = data.content?.[0]?.text || data.choices?.[0]?.message?.content || '';
     }
 
+    clearTimeout(timeout);
     res.json({ reply: reply.trim() });
   } catch (err) {
+    clearTimeout(timeout);
     console.error('[AI] Error:', err.message);
     res.status(500).json({ error: 'AI error', detail: err.message });
   }
