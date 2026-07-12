@@ -243,7 +243,7 @@ router.get('/:id/status', tenantAuth, async (req, res) => {
 router.get('/superadmin/requests', superadminAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
-      `SELECT tr.*, pm.name as payment_method_name, pm.type as payment_method_type, pm.account_name, pm.account_number,
+      `SELECT tr.*, pm.name as payment_method_name, pm.type as payment_method_type, pm.qris_type, pm.account_name, pm.account_number,
               t.name as tenant_name, t.slug as tenant_slug
        FROM topup_requests tr
        LEFT JOIN payment_methods pm ON tr.payment_method_id = pm.id
