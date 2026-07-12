@@ -1374,15 +1374,6 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: safeError(err) });
 });
 
-// 404 for unknown API routes
-app.use((req, res) => {
-  if (req.path.startsWith('/api')) {
-    return res.status(404).json({ error: 'Route not found' });
-  }
-  // SPA fallback already handled above
-  res.status(404).json({ error: 'Not found' });
-});
-
 // ─── AI CHAT ──────────────────────────────────────────────────
 app.post('/api/ai/chat', async (req, res) => {
   const { messages, system } = req.body;
@@ -1396,33 +1387,84 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
+    const aiBase = process.env.AI_BASE_URL || 'https://api.anthropic.com/v1';
+    const isOpenAICompat = !aiBase.includes('anthropic.com');
+
+    let body, headers;
+    if (isOpenAICompat) {
+      // OpenAI-compatible endpoint
+      body = JSON.stringify({
+        model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        messages: [
+          { role: 'system', content: system || '' },
+          ...messages.slice(-10),
+        ],
+      });
+      headers = {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      };
+    } else {
+      body = JSON.stringify({
+        model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        system: system || '',
+        messages: messages.slice(-10),
+      });
+      headers = {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 512,
-        system: system || '',
-        messages: messages.slice(-10), // max 10 messages context
-      }),
+      };
+    }
+
+    const response = await fetch(`${aiBase}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body,
     });
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Anthropic ${response.status}`);
+      const errText = await response.text().catch(() => '');
+      throw new Error(`HTTP ${response.status}: ${errText.slice(0, 200)}`);
     }
 
-    const data = await response.json();
-    const reply = data.content?.[0]?.text || '';
-    res.json({ reply });
+    const contentType = response.headers.get('content-type') || '';
+    let reply = '';
+
+    if (contentType.includes('text/event-stream')) {
+      // Parse SSE streaming response — accumulate all content delta chunks
+      const text = await response.text();
+      const lines = text.split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]') break;
+        try {
+          const chunk = JSON.parse(raw);
+          const delta = chunk.choices?.[0]?.delta?.content || '';
+          reply += delta;
+        } catch { /* skip malformed */ }
+      }
+    } else {
+      const data = await response.json();
+      reply = data.content?.[0]?.text || data.choices?.[0]?.message?.content || '';
+    }
+
+    res.json({ reply: reply.trim() });
   } catch (err) {
     console.error('[AI] Error:', err.message);
     res.status(500).json({ error: 'AI error', detail: err.message });
   }
+});
+
+// 404 for unknown API routes
+app.use((req, res) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'Route not found' });
+  }
+  res.status(404).json({ error: 'Not found' });
 });
 
 const PORT = process.env.PORT || 3000;
