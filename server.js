@@ -1205,30 +1205,42 @@ app.post('/api/payment/test/duitku', superadminAuth, async (req, res) => {
     const merchantCode = cfg.payment_duitku_merchant_code;
     const apiKey = cfg.payment_duitku_api_key;
 
-    // Create dummy transaction
+    // Duitku API v2 — header-based auth, endpoint berbeda untuk sandbox vs prod
+    const apiBase = isProd
+      ? 'https://api-prod.duitku.com/api/merchant'
+      : 'https://api-sandbox.duitku.com/api/merchant';
+
     const orderId = 'TEST-' + Date.now();
     const amount = 10000;
-    // Duitku signature: sha256(merchantCode + amount + merchantOrderId + apiKey)
+    const timestamp = Date.now();
     const signature = crypto
       .createHash('sha256')
-      .update(merchantCode + amount + orderId + apiKey)
+      .update(merchantCode + timestamp + apiKey)
       .digest('hex');
 
     const duitkuBody = {
-      merchantCode: merchantCode,
-      paymentAmount: amount,
       merchantOrderId: orderId,
-      productDetails: 'Test Payment',
+      paymentAmount: amount,
+      paymentMethod: 'VA',
+      productDetails: 'Test Payment CAFFE.ID',
+      merchantUserInfo: 'test@example.com',
+      customerVaName: 'Test User',
       email: 'test@example.com',
-      phoneNumber: '080000000000',
+      phoneNumber: '08000000000',
+      itemDetails: [{ name: 'Test Payment', price: amount, quantity: 1 }],
       callbackUrl: `${process.env.SITE_URL || 'https://caffe.id'}/api/topup/duitku-callback`,
       returnUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
-      signature: signature,
+      expiryPeriod: 60,
     };
 
-    const duitkuRes = await fetch(baseUrl + '/webapi/api/merchant/v1/inquiry/create', {
+    const duitkuRes = await fetch(apiBase + '/createInvoice', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-duitku-signature': signature,
+        'x-duitku-timestamp': timestamp.toString(),
+        'x-duitku-merchantcode': merchantCode,
+      },
       body: JSON.stringify(duitkuBody),
     });
     const duitkuResult = await duitkuRes.json();
@@ -1243,6 +1255,7 @@ app.post('/api/payment/test/duitku', superadminAuth, async (req, res) => {
       payment_url: duitkuResult.paymentUrl,
       reference: duitkuResult.reference,
       order_id: orderId,
+      env: isProd ? 'production' : 'sandbox',
     });
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });

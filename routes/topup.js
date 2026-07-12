@@ -483,34 +483,42 @@ router.post('/:id/duitku-charge', tenantAuth, async (req, res) => {
       return res.status(400).json({ error: 'Duitku belum dikonfigurasi. Hubungi admin.' });
 
     const isProd = cfg.payment_duitku_is_production === '1';
-    const baseUrl = isProd ? 'https://passport.duitku.com' : 'https://sandbox.duitku.com';
+    const apiBase = isProd
+      ? 'https://api-prod.duitku.com/api/merchant'
+      : 'https://api-sandbox.duitku.com/api/merchant';
     const merchantCode = cfg.payment_duitku_merchant_code;
     const apiKey = cfg.payment_duitku_api_key;
 
     const orderId = `TOPUP-${reqRow.id}-${Date.now()}`;
     const amount = reqRow.transfer_amount || reqRow.amount;
-    // Duitku signature: merchantCode + amount + merchantOrderId + apiKey (SHA256)
+    const timestamp = Date.now();
     const signature = crypto
       .createHash('sha256')
-      .update(merchantCode + amount + orderId + apiKey)
+      .update(merchantCode + timestamp + apiKey)
       .digest('hex');
 
     const duitkuBody = {
-      merchantCode: merchantCode,
-      paymentAmount: amount,
       merchantOrderId: orderId,
+      paymentAmount: parseInt(amount),
+      paymentMethod: 'VA',
       productDetails: `Topup ${reqRow.tenant_name || 'Caffe.id'}`,
+      merchantUserInfo: reqRow.admin_email || 'customer@example.com',
+      customerVaName: reqRow.tenant_name || 'Customer',
       email: reqRow.admin_email || 'customer@example.com',
-      phoneNumber: '080000000000',
+      phoneNumber: '08000000000',
+      itemDetails: [{ name: `Topup Saldo Caffe.id`, price: parseInt(amount), quantity: 1 }],
       callbackUrl: `${process.env.SITE_URL || 'https://caffe.id'}/api/topup/duitku-callback`,
       returnUrl: `${process.env.SITE_URL || 'https://caffe.id'}/tenant-billing`,
-      signature: signature,
+      expiryPeriod: 60,
     };
 
-    const duitkuRes = await fetch(baseUrl + '/webapi/api/merchant/v1/inquiry/create', {
+    const duitkuRes = await fetch(apiBase + '/createInvoice', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-duitku-signature': signature,
+        'x-duitku-timestamp': timestamp.toString(),
+        'x-duitku-merchantcode': merchantCode,
       },
       body: JSON.stringify(duitkuBody),
     });
@@ -547,9 +555,9 @@ router.post('/duitku-callback', async (req, res) => {
     const cfg = await getSettings('payment_duitku_');
     const apiKey = cfg.payment_duitku_api_key;
 
-    // Verify signature: sha256(merchantCode + amount + merchantOrderId + apiKey)
+    // Verify signature: md5(merchantCode + amount + merchantOrderId + apiKey)
     const expectedSig = crypto
-      .createHash('sha256')
+      .createHash('md5')
       .update(merchantCode + amount + merchantOrderId + apiKey)
       .digest('hex');
 
