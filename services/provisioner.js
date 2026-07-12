@@ -187,7 +187,7 @@ async function provisionTenant(tenantId, slug, email, password) {
 
     // ═══ 8. Create .env ═══
     await logProvisionTimed(tenantId, slug, 'setup.env', async () => {
-      const env = `NODE_ENV=production\nPORT=3000\nDB_HOST=${dbCName}\nDB_PORT=3306\nDB_USER=${dbUser}\nDB_PASSWORD=${dbPass}\nDB_NAME=${dbName}\nJWT_SECRET=${secret}\nTENANT_SLUG=${slug}\n`;
+      const env = `NODE_ENV=production\nPORT=3000\nDB_HOST=${dbCName}\nDB_PORT=3306\nDB_USER=${dbUser}\nDB_PASSWORD=${dbPass}\nDB_NAME=${dbName}\nJWT_SECRET=${secret}\nTENANT_SLUG=${slug}\nTENANT_NAME=${slug.includes('nusantara') ? 'Nusantara 2024' : tenant?.name || slug}\nPRICING_TIER=${tenant?.pricing_tier || 'free'}\n`;
       run(`cat > ${backendDir}/.env << 'ENVEOF'\n${env}\nENVEOF`);
     });
 
@@ -289,6 +289,7 @@ init().catch(e => { console.error(e); process.exit(1); });
         -e DB_HOST=${dbCName} -e DB_PORT=3306 \\
         -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} \\
         -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} \\
+        -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'} \\
         cafe-backend:latest`);
 
       // UI container (expose port for tenant-router)
@@ -398,6 +399,8 @@ async function repairProvisioning(tenantId) {
       -e DB_HOST=${dbCName} -e DB_PORT=3306 \\
       -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} \\
       -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} \\
+      -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' \\
+      -e PRICING_TIER=${tenant.pricing_tier || 'free'} \\
       cafe-backend:latest`);
     repairs.push('backend');
   }
