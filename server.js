@@ -366,7 +366,12 @@ app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
     const [rows] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Tenant not found' });
-    res.json(rows[0]);
+    const appDomain = process.env.APP_DOMAIN || 'caffe.id';
+    const t = rows[0];
+    t.app_domain = appDomain;
+    t.cafe_url = `https://${t.slug}.${appDomain}`;
+    t.admin_url_full = `https://office-${t.slug}.${appDomain}/admin`;
+    res.json(t);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
