@@ -431,6 +431,58 @@ app.post('/api/superadmin/tenants/:id/reprovision', superadminAuth, async (req, 
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
+// Superadmin - Redeploy with health check loop
+app.post('/api/superadmin/tenants/:id/redeploy', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT id, slug, backend_port, server_id, container_id FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+
+    await restartTenant(t.slug);
+
+    // Health check loop — poll up to 30s
+    let healthy = false;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        if (t.container_id) {
+          // Docker mode
+          const [serverRows] = await db.query('SELECT ip_address, ssh_user, ssh_password FROM servers WHERE id = ?', [t.server_id]);
+          if (serverRows.length) {
+            const s = serverRows[0];
+            const { execSync } = require('child_process');
+            const prefix = s.ssh_password
+              ? `sshpass -p '${s.ssh_password.replace(/'/g, "'\\''")}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@${s.ip_address}`
+              : `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@${s.ip_address}`;
+            const out = execSync(`${prefix} "docker inspect -f '{{.State.Status}}' ${t.container_id} 2>/dev/null || echo 'missing'"`, { encoding: 'utf8', timeout: 5000 }).trim();
+            if (out === 'running') { healthy = true; break; }
+          } else break;
+        } else {
+          // Non-docker — check port
+          const http = require('http');
+          await new Promise((resolve) => {
+            const req = http.get(`http://127.0.0.1:${t.backend_port}/api/settings/public`, (response) => {
+              let data = '';
+              response.on('data', chunk => data += chunk);
+              response.on('end', () => {
+                if (response.statusCode === 200) healthy = true;
+                resolve();
+              });
+            });
+            req.on('error', () => resolve());
+            req.setTimeout(2000, () => { req.destroy(); resolve(); });
+          });
+          if (healthy) break;
+        }
+      } catch { continue; }
+    }
+
+    // Update container_status
+    await db.query('UPDATE tenants SET container_status = ? WHERE id = ?', [healthy ? 'running' : 'failed', req.params.id]);
+
+    res.json({ success: true, healthy, container_status: healthy ? 'running' : 'failed' });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
 // Superadmin - Get tenant logs
 app.get('/api/superadmin/tenants/:id/logs', superadminAuth, async (req, res) => {
   try {
