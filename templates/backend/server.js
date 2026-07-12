@@ -12,16 +12,12 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Security
 app.use(helmet());
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
-
-// Rate limit
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
 app.use('/api', limiter);
 
-// Database
 let db;
 async function initDB() {
   db = mysql.createPool({
@@ -32,258 +28,289 @@ async function initDB() {
     waitForConnections: true,
     connectionLimit: 5
   });
-  console.log('Database connected');
 }
 
-// Auth middleware
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch (e) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
+  try { req.user = jwt.verify(token, process.env.JWT_SECRET); next(); }
+  catch (e) { res.status(401).json({ error: 'Invalid token' }); }
 };
 
-// ========== PUBLIC ROUTES ==========
-
-// Health
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', tenant: process.env.TENANT_SLUG || 'unknown' });
+// ── PUBLIC ──
+app.get('/api/settings/public', async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT setting_key, setting_value FROM settings");
+    const obj = {};
+    for (const r of rows) obj[r.setting_key] = r.setting_value;
+    res.json(obj);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Auth - Login
+app.get('/api/branches', async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT id, name, address, phone, email, image_url, is_active FROM branches WHERE is_active=1 ORDER BY id");
+    res.json({ branches: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/products', async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT p.id, p.name, p.price, p.description, p.is_available, p.image_url, p.category_id, c.name as category FROM products p LEFT JOIN categories c ON p.category_id=c.id WHERE p.is_available=1 ORDER BY c.name, p.name");
+    res.json({ products: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/categories', async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT id, name, description FROM categories WHERE is_active=1 ORDER BY name");
+    res.json({ categories: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── AUTH ──
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-    
-    if (!users.length) return res.status(401).json({ error: 'Email atau password salah' });
-    
-    const user = users[0];
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ error: 'Email atau password salah' });
-    
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    if (!users.length || !(await bcrypt.compare(password, users[0].password)))
+      return res.status(401).json({ error: 'Email atau password salah' });
+    const token = jwt.sign({ id: users[0].id, email: users[0].email, role: users[0].role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { id: users[0].id, name: users[0].name, email: users[0].email, role: users[0].role } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Auth - Forgot Password
-app.post('/api/auth/forgot', async (req, res) => {
+app.get('/api/auth/me', auth, async (req, res) => {
   try {
-    const { email } = req.body;
-    const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-    
-    // Always return success to prevent email enumeration
-    if (!users.length) {
-      return res.json({ success: true, message: 'Jika email terdaftar, link reset akan dikirim' });
-    }
-
-    // Generate reset token
-    const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-
-    await db.query('UPDATE users SET reset_token = ?, reset_token_exp = ? WHERE email = ?', [token, expires, email]);
-
-    // In production, send email here
-    console.log(`Reset token for ${email}: ${token}`);
-
-    res.json({ success: true, message: 'Jika email terdaftar, link reset akan dikirim' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const [users] = await db.query('SELECT id, name, email, role, created_at FROM users WHERE id = ?', [req.user.id]);
+    if (!users.length) return res.status(404).json({ error: 'User tidak ditemukan' });
+    res.json({ user: users[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Auth - Reset Password
-app.post('/api/auth/reset', async (req, res) => {
+// ── ADMIN: categories ──
+app.get('/api/categories/manage', auth, async (req, res) => {
   try {
-    const { token, password } = req.body;
-    
-    if (!token || !password) {
-      return res.status(400).json({ error: 'Token dan password wajib diisi' });
-    }
-    
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password minimal 8 karakter' });
-    }
-
-    const [users] = await db.query('SELECT * FROM users WHERE reset_token = ? AND reset_token_exp > NOW()', [token]);
-
-    if (users.length === 0) {
-      return res.status(400).json({ error: 'Token tidak valid atau kadaluarsa' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    await db.query('UPDATE users SET password = ?, reset_token = NULL, reset_token_exp = NULL WHERE id = ?', [hashedPassword, users[0].id]);
-
-    res.json({ success: true, message: 'Password berhasil direset' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const [rows] = await db.query("SELECT * FROM categories ORDER BY name");
+    res.json({ categories: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Auth - Verify Reset Token
-app.get('/api/auth/verify-reset/:token', async (req, res) => {
-  try {
-    const [rows] = await db.query('SELECT id FROM users WHERE reset_token = ? AND reset_token_exp > NOW()', [req.params.token]);
-
-    if (rows.length === 0) {
-      return res.status(400).json({ valid: false });
-    }
-
-    res.json({ valid: true, userId: rows[0].id });
-  } catch (e) {
-    res.status(500).json({ valid: false });
-  }
-});
-
-// ========== PROTECTED ROUTES ==========
-
-// Dashboard Stats
-app.get('/api/dashboard/stats', auth, async (req, res) => {
-  try {
-    const [revToday] = await db.query("SELECT COALESCE(SUM(total_amount), 0) as total FROM orders WHERE payment_status = 'paid' AND DATE(created_at) = CURDATE()");
-    const [revMonth] = await db.query("SELECT COALESCE(SUM(total_amount), 0) as total FROM orders WHERE payment_status = 'paid' AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())");
-    const [ordRows] = await db.query("SELECT COUNT(*) as cnt FROM orders WHERE DATE(created_at) = CURDATE()");
-    const [tblRows] = await db.query("SELECT COUNT(*) as cnt FROM tables");
-    const [prdRows] = await db.query("SELECT COUNT(*) as cnt FROM products");
-    const [usrRows] = await db.query("SELECT COUNT(*) as cnt FROM users WHERE role = 'customer'");
-    
-    res.json({
-      revenue_today: revToday[0]?.total || 0,
-      revenue_month: revMonth[0]?.total || 0,
-      orders: ordRows[0]?.cnt || 0,
-      tables: tblRows[0]?.cnt || 0,
-      products: prdRows[0]?.cnt || 0,
-      users: usrRows[0]?.cnt || 0,
-      tier: process.env.PRICING_TIER || 'free',
-      ram_mb: parseInt(process.env.RAM_MB || '64'),
-      cpu_cores: parseFloat(process.env.CPU_CORES || '0.25')
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Categories (public - no auth required)
-app.get('/api/categories', async (req, res) => {
-  try {
-    const [rows] = await db.query('SELECT * FROM categories WHERE is_active = 1');
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Products (public - no auth required)
-app.get('/api/products', async (req, res) => {
-  try {
-    const [rows] = await db.query('SELECT p.*, c.name as category_name FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.is_available = 1');
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Create Category (admin only)
 app.post('/api/categories', auth, async (req, res) => {
   try {
     const { name, description } = req.body;
-    const [result] = await db.query('INSERT INTO categories (name, description) VALUES (?, ?)', [name, description]);
-    res.json({ id: result.insertId });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    if (!name) return res.status(400).json({ error: 'Nama kategori wajib' });
+    const [r] = await db.query('INSERT INTO categories (name, description) VALUES (?,?)', [name, description || null]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Create Product (admin only)
+app.put('/api/categories/:id', auth, async (req, res) => {
+  try {
+    const { name, description, is_active } = req.body;
+    await db.query('UPDATE categories SET name=COALESCE(?,name), description=COALESCE(?,description), is_active=COALESCE(?,is_active) WHERE id=?', [name||null, description??null, is_active??null, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/categories/:id', auth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM categories WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ADMIN: products ──
+app.get('/api/products/manage', auth, async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT p.*, c.name as category FROM products p LEFT JOIN categories c ON p.category_id=c.id ORDER BY c.name, p.name");
+    res.json({ products: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/products', auth, async (req, res) => {
   try {
-    const { name, category_id, price, description } = req.body;
-    const [result] = await db.query('INSERT INTO products (name, category_id, price, description) VALUES (?, ?, ?, ?)', [name, category_id, price, description]);
-    res.json({ id: result.insertId });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const { name, category_id, price, description, image_url } = req.body;
+    if (!name) return res.status(400).json({ error: 'Nama produk wajib' });
+    const [r] = await db.query('INSERT INTO products (name, category_id, price, description, image_url) VALUES (?,?,?,?,?)', [name, category_id||null, price||0, description||null, image_url||null]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Tables
-app.get('/api/tables', auth, async (req, res) => {
+app.put('/api/products/:id', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM tables');
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const { name, category_id, price, description, is_available, image_url } = req.body;
+    await db.query('UPDATE products SET name=COALESCE(?,name), category_id=COALESCE(?,category_id), price=COALESCE(?,price), description=COALESCE(?,description), is_available=COALESCE(?,is_available), image_url=COALESCE(?,image_url) WHERE id=?',
+      [name||null, category_id??null, price??null, description??null, is_available??null, image_url??null, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Orders
+app.delete('/api/products/:id', auth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM products WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ADMIN: orders ──
 app.get('/api/orders', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT o.*, t.number as table_number FROM orders o LEFT JOIN tables t ON o.table_id = t.id ORDER BY o.created_at DESC LIMIT 50');
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const { status, date } = req.query;
+    let sql = "SELECT * FROM orders WHERE 1=1";
+    const params = [];
+    if (status) { sql += " AND status=?"; params.push(status); }
+    if (date) { sql += " AND DATE(created_at)=?"; params.push(date); }
+    sql += " ORDER BY created_at DESC LIMIT 100";
+    const [rows] = await db.query(sql, params);
+    res.json({ orders: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/orders', auth, async (req, res) => {
+app.put('/api/orders/:id/status', auth, async (req, res) => {
   try {
-    const { table_id, customer_name, items, payment_method, notes } = req.body;
-    
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: 'Status wajib' });
+    await db.query('UPDATE orders SET status=? WHERE id=?', [status, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/orders/daily-summary', auth, async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT DATE(created_at) as date, COUNT(*) as count, COALESCE(SUM(total_amount),0) as revenue FROM orders WHERE status!='cancelled' GROUP BY DATE(created_at) ORDER BY date DESC LIMIT 30");
+    res.json({ daily: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ADMIN: users ──
+app.get('/api/users', auth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT id, name, email, role, created_at FROM users ORDER BY name');
+    res.json({ users: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/users', auth, async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: 'name, email, password wajib' });
+    const hash = await bcrypt.hash(password, 10);
+    const [r] = await db.query('INSERT INTO users (name, email, password, role) VALUES (?,?,?,?)', [name, email, hash, role||'cashier']);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/users/:id', auth, async (req, res) => {
+  try {
+    const { name, email, role } = req.body;
+    await db.query('UPDATE users SET name=COALESCE(?,name), email=COALESCE(?,email), role=COALESCE(?,role) WHERE id=?', [name||null, email||null, role||null, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/users/:id', auth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM users WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ADMIN: settings ──
+app.get('/api/settings', auth, async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT * FROM settings ORDER BY id");
+    const obj = {};
+    for (const r of rows) obj[r.setting_key] = r.setting_value;
+    res.json(obj);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/settings', auth, async (req, res) => {
+  try {
+    for (const [k, v] of Object.entries(req.body)) {
+      await db.query('INSERT INTO settings (setting_key, setting_value) VALUES (?,?) ON DUPLICATE KEY UPDATE setting_value=?', [k, String(v), String(v)]);
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ADMIN: media upload ──
+app.use('/uploads', express.static(path.join(__dirname, 'public')));
+app.post('/api/media/upload', auth, async (req, res) => {
+  try {
+    const busboy = require('busboy');
+    const bb = busboy({ headers: req.headers });
+    let filePromise;
+    bb.on('file', (fieldname, stream, info) => {
+      const ext = path.extname(info.filename);
+      const name = crypto.randomBytes(12).toString('hex') + ext;
+      const filePath = path.join(__dirname, 'public', name);
+      filePromise = new Promise((resolve, reject) => {
+        const ws = require('fs').createWriteStream(filePath);
+        stream.pipe(ws);
+        ws.on('finish', () => resolve({ url: `/uploads/${name}`, filename: info.filename }));
+        ws.on('error', reject);
+      });
+    });
+    req.pipe(bb);
+    const result = await filePromise;
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── TABLES (admin) ──
+app.get('/api/tables', auth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM tables ORDER BY number');
+    res.json({ tables: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/tables/:id', auth, async (req, res) => {
+  try {
+    const { number, capacity, status } = req.body;
+    await db.query('UPDATE tables SET number=COALESCE(?,number), capacity=COALESCE(?,capacity), status=COALESCE(?,status) WHERE id=?', [number||null, capacity||null, status||null, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── CUSTOMER API ──
+app.get('/api/menu', async (req, res) => {
+  try {
+    const [categories] = await db.query("SELECT id, name FROM categories WHERE is_active=1 ORDER BY name");
+    const [products] = await db.query("SELECT id, name, price, description, image_url, category_id FROM products WHERE is_available=1 ORDER BY name");
+    res.json({ categories, products });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/orders', async (req, res) => {
+  try {
+    const { items, customer_name, note, table_number } = req.body;
+    if (!items?.length) return res.status(400).json({ error: 'Minimal 1 item' });
     let total = 0;
     for (const item of items) {
-      total += item.price * item.quantity;
+      const [[p]] = await db.query('SELECT price FROM products WHERE id=?', [item.product_id]);
+      if (!p) return res.status(400).json({ error: `Produk ${item.product_id} tidak ditemukan` });
+      total += p.price * (item.qty || 1);
     }
-    
-    const [result] = await db.query(
-      'INSERT INTO orders (table_id, customer_name, total_amount, payment_method, notes, status, payment_status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [table_id, customer_name, total, payment_method || 'cash', notes, 'pending', 'unpaid']
-    );
-    
-    for (const item of items) {
-      await db.query(
-        'INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, subtotal) VALUES (?, ?, ?, ?, ?, ?)',
-        [result.insertId, item.product_id, item.name, item.quantity, item.price, item.price * item.quantity]
-      );
-    }
-    
-    res.json({ id: result.insertId });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const [r] = await db.query('INSERT INTO orders (items, customer_name, note, total_amount, table_number, status) VALUES (?,?,?,?,?,?)',
+      [JSON.stringify(items), customer_name||'Guest', note||null, total, table_number||null, 'pending']);
+    res.status(201).json({ success: true, id: r.insertId, total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ========== STATIC FILES ==========
-
-const publicDir = path.join(__dirname, 'public');
-app.use('/admin', express.static(path.join(publicDir, 'admin')));
-app.use(express.static(publicDir));
-
-app.get('/admin/*', (req, res) => {
-  res.sendFile(path.join(publicDir, 'admin', 'index.html'));
+app.get('/api/orders/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM orders WHERE id=?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Order tidak ditemukan' });
+    res.json({ order: rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('*', (req, res) => {
-  const uiIndex = path.join(publicDir, 'ui', 'index.html');
-  if (require('fs').existsSync(uiIndex)) {
-    res.sendFile(uiIndex);
-  } else {
-    res.send('Cafe Azzura - Tenant Ready');
-  }
-});
-
-initDB().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Cafe Backend running on port ${PORT}`);
-  });
-}).catch(err => {
-  console.error('DB init failed:', err);
-  process.exit(1);
-});
+// ── START ──
+async function start() {
+  await initDB();
+  app.listen(PORT, () => console.log(`Backend running on :${PORT}`));
+}
+start();
