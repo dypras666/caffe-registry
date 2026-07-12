@@ -727,6 +727,7 @@ const settingsRouter = require('./routes/settings');
 const queueRouter = require('./routes/queue');
 const backupRouter = require('./routes/backup');
 const addonsRouter = require('./routes/addons');
+const containersRouter = require('./routes/containers');
 const { startAutoScaler } = require('./services/autoscaler');
 const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/email');
 
@@ -742,6 +743,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/queue', queueRouter);
 app.use('/api/backup', backupRouter);
 app.use('/api/addons', addonsRouter);
+app.use('/api/tenants', containersRouter);
 
 startAutoScaler();
 
