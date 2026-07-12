@@ -24,7 +24,7 @@ function sshPrefix(server) {
   const port = server.ssh_port || 22;
   const opts = '-o StrictHostKeyChecking=no -o ConnectTimeout=10';
   if (server.ssh_password) {
-    const e = server.ssh_password.replace(/'/g, "'\\''");
+    const e = server.ssh_password.replace(/\\/g, '\\\\').replace(/'/g, "'\\''").replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
     return `sshpass -p '${e}' ssh ${opts} ${user}@${host} -p ${port}`;
   }
   return `ssh ${opts} -i ${server.ssh_key_path || '~/.ssh/id_rsa'} ${user}@${host} -p ${port}`;
