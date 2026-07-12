@@ -375,7 +375,7 @@ app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
 // Superadmin - Update tenant
 app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
-    const allowed = ['name', 'email', 'phone', 'status', 'pricing_tier', 'admin_email', 'balance', 'auto_suspend'];
+    const allowed = ['name', 'email', 'phone', 'status', 'pricing_tier', 'admin_email', 'balance', 'auto_suspend', 'custom_domain', 'container_status'];
     const updates = [], values = [];
     for (const field of allowed) {
       if (req.body[field] !== undefined) {
@@ -493,6 +493,143 @@ app.get('/api/superadmin/tenants/:id/logs', superadminAuth, async (req, res) => 
     const lines = parseInt(req.query.lines) || 100;
     const logs = await getTenantLogs(t.slug, lines);
     res.json({ logs });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Get tenant env vars
+app.get('/api/superadmin/tenants/:id/env', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT id, var_key, var_value, is_secret FROM tenant_env_vars WHERE tenant_id = ? ORDER BY var_key', [req.params.id]);
+    res.json({ vars: rows });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Save tenant env vars (replace all)
+app.put('/api/superadmin/tenants/:id/env', superadminAuth, async (req, res) => {
+  try {
+    const { vars } = req.body;
+    if (!Array.isArray(vars)) return res.status(400).json({ error: 'vars harus array' });
+    await db.query('DELETE FROM tenant_env_vars WHERE tenant_id = ?', [req.params.id]);
+    for (const v of vars) {
+      if (!v.key) continue;
+      await db.query(
+        'INSERT INTO tenant_env_vars (tenant_id, var_key, var_value, is_secret) VALUES (?, ?, ?, ?)',
+        [req.params.id, v.key, v.value ?? '', v.is_secret ? 1 : 0]
+      );
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Get tenant container info (DB, network, ports, container status)
+app.get('/api/superadmin/tenants/:id/container', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT id, slug, backend_port, ui_port, admin_port FROM tenants WHERE id=?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant not found' });
+    const execSync = require('child_process').execSync;
+    const net = `tenant-${t.slug}`;
+    const netExist = execSync(`docker network ls --filter name=${net} --format {{.Name}}`, { encoding:'utf8', timeout:5000 }).trim();
+    const [netRow] = await db.query('SELECT * FROM tenant_networks WHERE tenant_id=?', [t.id]);
+    const containers = {};
+    for (const name of [`${t.slug}-backend`, `${t.slug}-ui`, `${t.slug}-admin`, `${t.slug}-db`]) {
+      try {
+        const raw = execSync(`docker inspect ${name} --format '{{json .State}}' 2>/dev/null || echo "null"`, { encoding:'utf8', timeout:5000 }).trim();
+        const state = JSON.parse(raw);
+        containers[name.replace(t.slug+'-','')] = state && state.Status ? {
+          status: state.Status, running: state.Running, startedAt: state.StartedAt, exitCode: state.ExitCode,
+        } : null;
+      } catch { containers[name.replace(t.slug+'-','')] = null; }
+    }
+    res.json({
+      slug: t.slug, network: netExist || null,
+      ports: { backend: t.backend_port, ui: t.ui_port, admin: t.admin_port },
+      db: netRow ? { container: netRow.db_container_id, port: netRow.db_port, db_name: `cafe_${t.slug.replace(/-/g, '_')}` } : null,
+      containers,
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Execute command in container
+app.post('/api/superadmin/tenants/:id/container/exec', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id=?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant not found' });
+    const { container, command } = req.body;
+    if (!container || !command) return res.status(400).json({ error: 'container dan command wajib' });
+    const allowed = ['backend', 'ui', 'admin', 'db'];
+    if (!allowed.includes(container)) return res.status(400).json({ error: `Container must be one of: ${allowed.join(', ')}` });
+    const cName = container === 'db' ? `${t.slug}-db` : `${t.slug}-${container}`;
+    const output = require('child_process').execSync(
+      `docker exec -i ${cName} sh -c '${command.replace(/'/g, "'\\''")}' 2>&1`,
+      { encoding:'utf8', timeout:15000 }
+    ).trim();
+    res.json({ output, container: cName });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Superadmin - Get tenant DB info (credentials, connection string)
+app.get('/api/superadmin/tenants/:id/db-info', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug, db_name, db_user, db_pass FROM tenants WHERE id=?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant not found' });
+    const [netRow] = await db.query('SELECT * FROM tenant_networks WHERE tenant_id=?', [req.params.id]);
+    res.json({
+      slug: t.slug, database: t.db_name, user: t.db_user, password: t.db_pass,
+      db_container: netRow?.db_container_id || null,
+      root_password: netRow?.db_root_password || null,
+      connection_string: `mysql -u ${t.db_user} -p'${t.db_pass}' -h ${netRow?.db_container_id || '???'} -P 3306 ${t.db_name}`,
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Domain info (default subdomains + DNS check)
+app.get('/api/superadmin/tenants/:id/domain', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug, custom_domain FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const dns = require('dns');
+    const appDomain = process.env.APP_DOMAIN || 'caffe.id';
+    const defaultDomains = {
+      customer: `https://${t.slug}.${appDomain}`,
+      admin: `https://office-${t.slug}.${appDomain}`,
+    };
+    // DNS check helper
+    const checkDNS = (domain) => new Promise(resolve => {
+      dns.resolveCname(domain.replace('https://',''), (err, cnames) => {
+        if (!err && cnames.length) return resolve({ resolved: true, type: 'CNAME', target: cnames[0] });
+        dns.resolve4(domain.replace('https://',''), (err2, addrs) => {
+          if (!err2 && addrs.length) return resolve({ resolved: true, type: 'A', target: addrs[0] });
+          resolve({ resolved: false, type: null, target: null });
+        });
+      });
+    });
+    const checks = {
+      customer: await checkDNS(defaultDomains.customer),
+      admin: await checkDNS(defaultDomains.admin),
+    };
+    if (t.custom_domain) {
+      checks.custom = await checkDNS(t.custom_domain);
+    }
+    res.json({
+      slug: t.slug,
+      appDomain,
+      defaultDomains,
+      customDomain: t.custom_domain || null,
+      dns: checks,
+    });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Set custom domain
+app.put('/api/superadmin/tenants/:id/domain', superadminAuth, async (req, res) => {
+  try {
+    const { custom_domain } = req.body;
+    if (custom_domain && typeof custom_domain === 'string') {
+      await db.query('UPDATE tenants SET custom_domain = ? WHERE id = ?', [custom_domain.trim(), req.params.id]);
+    } else {
+      await db.query('UPDATE tenants SET custom_domain = NULL WHERE id = ?', [req.params.id]);
+    }
+    res.json({ success: true, custom_domain: custom_domain?.trim() || null });
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
@@ -682,7 +819,9 @@ app.post('/api/register', authLimiter, async (req, res) => {
       success: true,
       tenantId,
       slug,
-      message: 'Tenant sedang diproses. Ini membutuhkan waktu 3-5 menit.'
+      message: 'Tenant sedang diproses. Ini membutuhkan waktu 3-5 menit.',
+      warning: 'Subdomain tidak bisa diubah setelah registrasi. Pastikan slug sudah benar.',
+      note: 'Nama cafe akan sesuai dengan nama yang didaftarkan.'
     });
     
   } catch (error) {

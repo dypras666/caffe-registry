@@ -9,7 +9,7 @@ const queue = require('../services/queue');
 router.get('/tenants', superadminAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
-      "SELECT id, name, slug, status, balance, auto_suspend, suspended_at, pricing_tier, admin_email FROM tenants ORDER BY balance ASC"
+      "SELECT id, name, slug, email, phone, status, container_status, container_id, server_id, pricing_tier, balance, auto_suspend, suspended_at, admin_email, ram_mb, cpu_cores, disk_mb, backend_port, admin_url, custom_domain, created_at, updated_at FROM tenants ORDER BY balance ASC"
     );
     const dailyRate = { free: 0, starter: 1000, business: 2500, enterprise: 5000 };
     const result = rows.map(t => ({
@@ -95,6 +95,69 @@ router.post('/check', superadminAuth, async (req, res) => {
     const { checkBilling } = require('../services/billing');
     checkBilling().catch(console.error);
     res.json({ success: true, message: 'Billing check triggered' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Provisioning audit & repair ────────────────────────────
+
+// GET /api/provisioning/logs — get provisioning logs
+router.get('/provisioning/logs', superadminAuth, async (req, res) => {
+  try {
+    const { tenant_id } = req.query;
+    let query = `SELECT pl.*, t.name as tenant_name
+      FROM provisioning_logs pl
+      LEFT JOIN tenants t ON t.id = pl.tenant_id`;
+    const params = [];
+    if (tenant_id) {
+      query += ' WHERE pl.tenant_id = ?';
+      params.push(tenant_id);
+    }
+    query += ' ORDER BY pl.created_at DESC LIMIT 100';
+    const [rows] = await db.query(query, params);
+    res.json({ logs: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/provisioning/failed — list failed tenants
+router.get('/provisioning/failed', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT id, name, slug, email, status, container_status, backend_port, error, created_at FROM tenants WHERE status='failed' ORDER BY updated_at DESC"
+    );
+    res.json({ tenants: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/provisioning/repair/:tenantId — repair failed tenant
+router.post('/provisioning/repair/:tenantId', superadminAuth, async (req, res) => {
+  try {
+    const { repairProvisioning } = require('../services/provisioner');
+    const result = await repairProvisioning(req.params.tenantId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/provisioning/retry/:tenantId — enqueue retry
+router.post('/provisioning/retry/:tenantId', superadminAuth, async (req, res) => {
+  try {
+    const [[tenant]] = await db.query('SELECT * FROM tenants WHERE id=?', [req.params.tenantId]);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    await queue.enqueue('provisioning.retry', {
+      tenant_id: tenant.id, slug: tenant.slug,
+      email: tenant.admin_email, password: 'retry',
+      retry_count: 0, error: 'Manual retry',
+    });
+
+    res.json({ success: true, message: `Retry queued for ${tenant.slug}` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -125,3 +125,68 @@ router.delete('/methods/:id', superadminAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+// GET /api/payment/test/:gateway — test gateway connectivity
+router.get('/test/duitku', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'payment_duitku_%'"
+    );
+    const cfg = {};
+    for (const r of rows) cfg[r.setting_key] = r.setting_value;
+
+    const merchantCode = cfg.payment_duitku_merchant_code;
+    const apiKey = cfg.payment_duitku_api_key;
+    const isProd = cfg.payment_duitku_is_production === '1' || cfg.payment_duitku_is_production === 'true';
+    const active = cfg.payment_duitku_active === '1' || cfg.payment_duitku_active === 'true';
+
+    if (!merchantCode || !apiKey) {
+      return res.status(400).json({ error: 'Duitku not configured', active, merchantCode: !!merchantCode, apiKey: !!apiKey });
+    }
+
+    // Minimal test — create a dummy transaction
+    const baseUrl = isProd ? 'https://passport.duitku.com' : 'https://sandbox.duitku.com';
+    const paymentAmount = 10000;
+    const merchantOrderId = 'TEST-' + Date.now();
+    const productDetails = 'Test Payment';
+    const customerVaName = 'Test User';
+    const email = 'test@test.com';
+    const returnUrl = 'https://caffe.my.id';
+    const callbackUrl = 'https://caffe.my.id/api/payment/duitku/callback';
+
+    const md5 = require('crypto').createHash('md5');
+    const signature = md5.update(merchantCode + merchantOrderId + paymentAmount + apiKey).digest('hex');
+
+    const body = JSON.stringify({
+      merchantCode,
+      paymentAmount,
+      merchantOrderID: merchantOrderId,
+      productDetails,
+      customerVaName,
+      email,
+      returnUrl,
+      callbackUrl,
+      signature,
+    });
+
+    const http = require('https');
+    const r = await new Promise((resolve, reject) => {
+      const req = http.request(`${baseUrl}/webapi/api/merchant/transaction/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        timeout: 15000,
+      }, (resp) => {
+        let data = '';
+        resp.on('data', c => data += c);
+        resp.on('end', () => resolve({ status: resp.statusCode, body: data }));
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    res.json({ success: true, active, isProduction: isProd, duitkuStatus: r.status, duitkuResponse: r.body });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});

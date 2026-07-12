@@ -5,6 +5,7 @@
 const queue = require('./queue');
 const emailSvc = require('./email');
 const db = require('../config/database');
+const { sshPrefix, run } = require('./provisioner');
 
 const FMT_RP = (v) => `Rp ${Number(v || 0).toLocaleString('id-ID')}`;
 
@@ -63,9 +64,12 @@ queue.register('email.login_info', async ({ to, name, cafeName, adminUrl, email,
 queue.register('email.provision_complete', async ({ to, name, slug, adminUrl, cafeUrl, email }) => {
   await emailSvc.sendMail({
     to,
-    subject: '🚀 Cafe Anda Sudah Siap! — Caffe.id',
+    subject: 'Cafe Anda Sudah Siap! — Caffe.id',
     template: 'provision-complete.html',
-    vars: { name, slug, adminUrl, cafeUrl, email },
+    vars: {
+      name, slug, adminUrl, cafeUrl, email,
+      subdomainWarning: 'Subdomain ' + slug + '.caffe.id tidak bisa diubah setelah ini.',
+    },
   });
 });
 
@@ -207,6 +211,91 @@ queue.register('bca.scan_topup', async () => {
   // Always reschedule every 5 minutes
   const in5m = new Date(Date.now() + 5 * 60 * 1000);
   await queue.enqueue('bca.scan_topup', {}, { runAt: in5m, maxAttempts: 1 });
+});
+
+// ─── Container: check all running containers ─────────────────────
+queue.register('container.check_status', async () => {
+  const [tenants] = await db.query(
+    "SELECT id, slug, container_status, backend_port FROM tenants WHERE status IN ('active','provisioning') AND backend_port IS NOT NULL"
+  );
+  if (!tenants.length) {
+    const [legacy] = await db.query("SELECT id, slug, container_status, container_id, server_id FROM tenants WHERE server_id IS NOT NULL AND container_id IS NOT NULL");
+    if (!legacy.length) { console.log('[Queue] container.check_status: no tenants with containers'); return; }
+  }
+
+  // Local Docker check (cafe-azzura containers named {slug}-backend)
+  let running = new Map();
+  try {
+    const out = run('docker ps --format "{{.Names}}|{{.Status}}|{{.ID}}" 2>/dev/null || true');
+    for (const line of out.trim().split('\n').filter(Boolean)) {
+      const [name, status, id] = line.split('|');
+      if (name && name.endsWith('-backend')) {
+        const slug = name.replace('-backend', '');
+        running.set(slug, { id: id ? id.substring(0, 12) : null, status, containerName: name });
+      }
+    }
+  } catch (e) {
+    console.error('[Queue] docker ps error:', e.message);
+  }
+
+  // Update tenant statuses
+  for (const t of tenants) {
+    const found = running.get(t.slug);
+    const dockerOk = found && found.status.startsWith('Up');
+    const newStatus = dockerOk ? 'running' : (found ? 'error' : 'stopped');
+    if (t.container_status !== newStatus) {
+      await db.query('UPDATE tenants SET container_status = ?, container_id = ?, updated_at = NOW() WHERE id = ?',
+        [newStatus, dockerOk ? found.id : null, t.id]);
+    }
+  }
+
+  // Also check legacy tenants by container_id
+  const [legacyTenants] = await db.query("SELECT id, slug, container_status, container_id FROM tenants WHERE server_id IS NOT NULL AND container_id IS NOT NULL AND backend_port IS NULL");
+  for (const t of legacyTenants) {
+    const found = running.get(t.slug);
+    const newStatus = found && found.status.startsWith('Up') ? 'running' : 'stopped';
+    if (t.container_status !== newStatus) {
+      await db.query('UPDATE tenants SET container_status = ? WHERE id = ?', [newStatus, t.id]);
+    }
+  }
+
+  // Reschedule every 2 minutes
+  const in2m = new Date(Date.now() + 2 * 60 * 1000);
+  await queue.enqueue('container.check_status', {}, { runAt: in2m, maxAttempts: 1 });
+});
+
+// ─── Provisioning: auto-retry failed ──────────────────────────
+queue.register('provisioning.retry', async (job) => {
+  const { tenant_id, slug, email, password, retry_count = 0, error: lastError } = job;
+  const maxRetries = 3;
+
+  if (retry_count >= maxRetries) {
+    console.error(`[AUTO-RETRY] ${slug} — max retries (${maxRetries}) reached. Last error: ${lastError}`);
+    await db.query('UPDATE tenants SET container_status = ? WHERE id = ?', ['failed', tenant_id]);
+    return;
+  }
+
+  console.log(`[AUTO-RETRY] ${slug} — attempt ${retry_count + 1}/${maxRetries}`);
+
+  try {
+    const { repairProvisioning } = require('./provisioner');
+    const result = await repairProvisioning(tenant_id);
+    if (result.repaired === 0) {
+      // No repair needed — retry full provision
+      await db.query("UPDATE tenants SET status=? WHERE id=?", ['provisioning', tenant_id]);
+      await require('./provisioner').provisionTenant(tenant_id, slug, email, password);
+    }
+  } catch (e) {
+    console.error(`[AUTO-RETRY] ${slug} — attempt ${retry_count + 1} failed:`, e.message);
+    // Re-enqueue with backoff
+    const backoff = Math.pow(2, retry_count) * 30 * 1000; // 30s, 60s, 120s
+    const runAt = new Date(Date.now() + backoff);
+    await queue.enqueue('provisioning.retry', {
+      tenant_id, slug, email, password,
+      retry_count: retry_count + 1,
+      error: e.message,
+    }, { runAt, maxAttempts: 1 });
+  }
 });
 
 module.exports = {}; // side-effects only — handlers auto-registered above

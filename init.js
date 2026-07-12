@@ -164,6 +164,21 @@ async function init() {
     )
   `);
 
+  // Tenant env vars
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS tenant_env_vars (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tenant_id INT NOT NULL,
+      var_key VARCHAR(100) NOT NULL,
+      var_value TEXT,
+      is_secret TINYINT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+      UNIQUE KEY uq_tenant_key (tenant_id, var_key)
+    ) ENGINE=InnoDB
+  `);
+
   // Queue / email jobs table
   await db.query(`
     CREATE TABLE IF NOT EXISTS queue_jobs (
