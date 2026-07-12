@@ -134,10 +134,10 @@ async function provisionTenant(tenantId, slug, email, password) {
         [tenantId, slug, networkName, dbCName, 3306, dbRootPass]
       );
 
-      // Wait for MySQL readiness
+      // Wait for MySQL readiness — use socket auth inside container (mysql 8.0)
       for (let i = 0; i < 30; i++) {
         try {
-          const ok = run(`docker exec ${dbCName} mysqladmin ping -uroot -p${dbRootPass} --silent 2>/dev/null`).trim();
+          const ok = run(`docker exec ${dbCName} mysqladmin ping --silent 2>/dev/null`).trim();
           if (ok === 'mysqld is alive') { console.log(`[${slug}] MySQL ready`); return; }
         } catch (_) {}
         run(`sleep 2`);
@@ -281,17 +281,16 @@ init().catch(e => { console.error(e); process.exit(1); });
       // Remove old containers
       run(`docker rm -f ${beCName} ${slug}-ui ${slug}-admin 2>/dev/null || true`);
 
-      // Backend container (network mode — connects to MySQL container)
+      // Backend container (no volume mount — use image directly with env vars)
       const memFlag = tenant?.ram_mb ? `--memory=${tenant.ram_mb}m` : '';
-      run(`docker run -d --name ${beCName} --restart unless-stopped \\\
-        --network ${networkName} \\\
-        -v ${backendDir}:/app \\\
-        ${memFlag} \\\
-        -e PORT=3000 \\\
-        -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\
-        -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} \\\
-        -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} \\\
-        -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'} \\\
+      run(`docker run -d --name ${beCName} --restart unless-stopped \\\\
+        --network ${networkName} \\\\
+        ${memFlag} \\\\
+        -e PORT=3000 \\\\
+        -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\\
+        -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} \\\\
+        -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} \\\\
+        -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'} \\\\
         cafe-backend:latest`);
 
       // UI container (expose port for tenant-router)
@@ -395,18 +394,18 @@ async function repairProvisioning(tenantId) {
   const beCName = dockerBackendContainer(tenant.slug);
   const beRunning = run(`docker inspect -f {{.State.Running}} ${beCName} 2>/dev/null || echo notfound`).trim();
   if (beRunning !== 'true') {
+    // Backend container (no volume mount — use image directly)
     const ramMb = tenant.ram_mb || 256;
     run(`docker rm -f ${beCName} 2>/dev/null || true`);
-    run(`docker run -d --name ${beCName} --restart unless-stopped \\\
-      --network ${net} \\\
-      --memory=${ramMb}m \\\
-      -v ${TENANTS_DIR}/${tenant.slug}/backend:/app \\\
-      -e PORT=3000 \\\
-      -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\
-      -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} \\\
-      -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} \\\
-      -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' \\\
-      -e PRICING_TIER=${tenant.pricing_tier || 'free'} \\\
+    run(`docker run -d --name ${beCName} --restart unless-stopped \\\\
+      --network ${net} \\\\
+      --memory=${ramMb}m \\\\
+      -e PORT=3000 \\\\
+      -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\\
+      -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} \\\\
+      -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} \\\\
+      -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' \\\\
+      -e PRICING_TIER=${tenant.pricing_tier || 'free'} \\\\
       cafe-backend:latest`);
     repairs.push('backend');
   }
