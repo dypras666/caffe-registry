@@ -1354,6 +1354,8 @@ function safeError(err) {
 // ========== STATIC FILES ==========
 // Serve cafe-saas React SPA (built to public/)
 app.use(express.static(__dirname + '/public'));
+// Serve uploaded files (STORAGE_DRIVER=local)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // SPA catch-all — serve index.html for all non-API routes
 app.use((req, res, next) => {
