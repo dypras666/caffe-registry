@@ -63,11 +63,24 @@ router.get('/:id/containers', superadminAuth, async (req, res) => {
     const result = await Promise.all(names.map(async (key) => {
       const dn = containerDockerName(tenant.slug, key);
       let status = 'unknown';
+      let cpu = null, memPerc = null, memUsage = null;
       try {
         const out = sshRun(server, `docker inspect -f '{{.State.Status}}' ${dn} 2>/dev/null || echo 'missing'`);
         status = out === 'missing' ? 'stopped' : out;
       } catch { status = 'unknown'; }
-      return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn };
+
+      // Get realtime stats via docker stats
+      try {
+        const raw = sshRun(server, `docker stats ${dn} --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' 2>/dev/null || true`);
+        if (raw && !raw.startsWith('docker:')) {
+          const parts = raw.split('|');
+          cpu = parts[0] || null;
+          memPerc = parts[1] || null;
+          memUsage = parts[2] || null;
+        }
+      } catch { /* stats n/a */ }
+
+      return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsage };
     }));
 
     res.json({ containers: result });
