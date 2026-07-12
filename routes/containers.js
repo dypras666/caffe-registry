@@ -40,7 +40,7 @@ function sshRun(server, cmd) {
 // ─── Helpers ───────────────────────────────────────────────
 async function getTenantServer(id) {
   const [[t]] = await db.query(
-    'SELECT id, slug, ram_mb, backend_port, ui_port, admin_port, server_id FROM tenants WHERE id = ?', [id]
+    'SELECT id, slug, backend_port, ui_port, admin_port, server_id FROM tenants WHERE id = ?', [id]
   );
   if (!t) throw new Error('Tenant not found');
   if (!t.server_id) throw new Error('Tenant has no server assigned');
@@ -53,7 +53,7 @@ function validateContainer(name) {
   if (!CONTAINER_META[name]) throw new Error(`Unknown container "${name}". Valid: ${Object.keys(CONTAINER_META).join(', ')}`);
 }
 
-// ─── GET /api/tenants/:id/containers — list 4 containers ───
+// ─── GET /api/tenants/:id/containers — list + stats ───
 router.get('/:id/containers', superadminAuth, async (req, res) => {
   try {
     const { tenant, server } = await getTenantServer(req.params.id);
@@ -69,83 +69,36 @@ router.get('/:id/containers', superadminAuth, async (req, res) => {
         status = out === 'missing' ? 'stopped' : out;
       } catch { status = 'unknown'; }
 
-      // Get realtime stats via docker stats + memory limit
-      let memUsed = null, memLimit = null;
+      // docker stats (real-time CPU / RAM)
       try {
         const raw = sshRun(server, `docker stats ${dn} --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' 2>/dev/null || true`);
         if (raw && !raw.startsWith('docker:')) {
           const parts = raw.split('|');
           cpu = parts[0] || null;
           memPerc = parts[1] || null;
-          if (parts[2]) {
-            const m = parts[2].match(/^([\d.]+ ?\w+)/);
-            memUsed = m ? m[1] : null;
-          }
+          memUsage = parts[2] || null;
         }
       } catch { /* stats n/a */ }
 
-      // Memory limit: actual from docker inspect, fallback tenant ram_mb
-      let limitBytes = 0;
-      try {
-        const bytes = sshRun(server, `docker inspect -f '{{.HostConfig.Memory}}' ${dn} 2>/dev/null || echo 0`);
-        limitBytes = parseInt(bytes) || 0;
-        if (limitBytes > 0) {
-          memLimit = limitBytes >= 1073741824 ? (limitBytes / 1073741824).toFixed(1) + 'GiB' : Math.round(limitBytes / 1048576) + 'MiB';
-        }
-      } catch { /* no limit set */ }
-      // Don't fallback to tenant ram_mb if docker has no actual limit — avoid showing fake limit
-
-      return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsed, memLimit };
+      return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsage };
     }));
 
     res.json({ containers: result });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── GET /api/tenants/:id/containers/:name/stats — CPU/RAM/disk ───
-router.get('/:id/containers/:name/stats', superadminAuth, async (req, res) => {
-  try {
-    const { tenant, server } = await getTenantServer(req.params.id);
-    validateContainer(req.params.name);
-    const dn = containerDockerName(tenant.slug, req.params.name);
-
-    let cpu = null, memPerc = null, memUsage = null;
-    try {
-      const raw = sshRun(server, `docker stats ${dn} --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' 2>/dev/null || true`);
-      if (raw) {
-        const parts = raw.split('|');
-        cpu = parts[0] || null;
-        memPerc = parts[1] || null;
-        memUsage = parts[2] || null;
-      }
-    } catch { /* stats not available */ }
-
-    let diskMb = null;
-    try {
-      const df = sshRun(server, `docker exec ${dn} df -m / 2>/dev/null | tail -1 || true`);
-      if (df) {
-        const cols = df.trim().split(/\s+/);
-        diskMb = { total: parseInt(cols[1]) || null, used: parseInt(cols[2]) || null, available: parseInt(cols[3]) || null };
-      }
-    } catch { /* disk not available */ }
-
-    res.json({ container: dn, cpu, memPerc, memUsage, diskMb });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ─── POST /api/tenants/:id/containers/:name/restart — restart container via SSH ───
+// ─── POST /api/tenants/:id/containers/:name/restart ───
 router.post('/:id/containers/:name/restart', superadminAuth, async (req, res) => {
   try {
     const { tenant, server } = await getTenantServer(req.params.id);
     validateContainer(req.params.name);
     const dn = containerDockerName(tenant.slug, req.params.name);
-
     sshRun(server, `docker restart ${dn} 2>&1 || true`);
     res.json({ success: true, container: dn, action: 'restarted' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── GET /api/tenants/:id/containers/:name/logs — tail logs ───
+// ─── GET /api/tenants/:id/containers/:name/logs ───
 router.get('/:id/containers/:name/logs', superadminAuth, async (req, res) => {
   try {
     const { tenant, server } = await getTenantServer(req.params.id);
@@ -153,25 +106,21 @@ router.get('/:id/containers/:name/logs', superadminAuth, async (req, res) => {
     const dn = containerDockerName(tenant.slug, req.params.name);
     const lines = parseInt(req.query.lines) || 100;
     const capped = Math.min(lines, 500);
-
     let logs = '';
     try {
       logs = sshRun(server, `docker logs --tail ${capped} ${dn} 2>&1 || true`);
     } catch { logs = 'No logs available'; }
-
     res.json({ container: dn, logs });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── PUT /api/tenants/:id/env — update env vars (DB only, no SSH) ───
+// ─── PUT /api/tenants/:id/env ───
 router.put('/:id/env', superadminAuth, async (req, res) => {
   try {
     const { vars } = req.body;
     if (!Array.isArray(vars)) return res.status(400).json({ error: 'vars harus array' });
-
     const [[t]] = await db.query('SELECT id FROM tenants WHERE id = ?', [req.params.id]);
     if (!t) return res.status(404).json({ error: 'Tenant not found' });
-
     await db.query('DELETE FROM tenant_env_vars WHERE tenant_id = ?', [req.params.id]);
     for (const v of vars) {
       if (!v.key) continue;
