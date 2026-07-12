@@ -73,6 +73,7 @@ router.post('/request', tenantAuth, async (req, res) => {
     // Cek unique code dari DB (bisa toggle per method)
     const useCode = pm.use_unique_code === 1 || pm.use_unique_code === undefined;
     let transfer_amount = amount;
+    let qris_expires_at = null;
 
     if (useCode) {
       const usedCodes = await getUsedCodesToday(db);
