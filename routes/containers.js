@@ -69,18 +69,32 @@ router.get('/:id/containers', superadminAuth, async (req, res) => {
         status = out === 'missing' ? 'stopped' : out;
       } catch { status = 'unknown'; }
 
-      // Get realtime stats via docker stats
+      // Get realtime stats via docker stats + memory limit
+      let memUsed = null, memLimit = null;
       try {
         const raw = sshRun(server, `docker stats ${dn} --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' 2>/dev/null || true`);
         if (raw && !raw.startsWith('docker:')) {
           const parts = raw.split('|');
           cpu = parts[0] || null;
           memPerc = parts[1] || null;
-          memUsage = parts[2] || null;
+          if (parts[2]) {
+            const m = parts[2].match(/^([\d.]+ ?\w+)/);
+            memUsed = m ? m[1] : null;
+          }
         }
       } catch { /* stats n/a */ }
 
-      return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsage };
+      // Container memory limit from docker inspect (0 = unlimited)
+      try {
+        const bytes = sshRun(server, `docker inspect -f '{{.HostConfig.Memory}}' ${dn} 2>/dev/null || echo 0`);
+        const b = parseInt(bytes);
+        if (b > 0) {
+          const mb = (b / 1024 / 1024).toFixed(0);
+          memLimit = mb > 1024 ? (b / 1024 / 1024 / 1024).toFixed(1) + 'GiB' : mb + 'MiB';
+        }
+      } catch { /* no limit */ }
+
+      return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsed, memLimit };
     }));
 
     res.json({ containers: result });
