@@ -250,6 +250,17 @@ router.get('/superadmin/requests', superadminAuth, async (req, res) => {
        JOIN tenants t ON tr.tenant_id = t.id
        ORDER BY CASE tr.status WHEN 'pending' THEN 0 ELSE 1 END, tr.created_at DESC LIMIT 100`
     );
+    // Override account_number from system_settings for bank_transfer
+    const [[manualNum]] = await db.query(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'payment_manual_account_number'"
+    );
+    if (manualNum) {
+      for (const r of rows) {
+        if (r.payment_method_type === 'bank_transfer') {
+          r.account_number = manualNum.setting_value;
+        }
+      }
+    }
     res.json({ requests: rows });
   } catch (e) {
     res.status(500).json({ error: e.message });

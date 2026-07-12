@@ -40,7 +40,7 @@ app.use(helmet({
         'https://resend.com',
         ...(process.env.APP_DOMAIN ? [`https://*.${process.env.APP_DOMAIN}`] : []),
       ],
-      connectSrc: ["'self'", ...(process.env.APP_DOMAIN ? [`https://*.${process.env.APP_DOMAIN}`] : [])],
+      connectSrc: ["'self'", "https://local01.ischool.my.id", ...(process.env.APP_DOMAIN ? [`https://*.${process.env.APP_DOMAIN}`] : [])],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],
     },
@@ -1375,71 +1375,88 @@ app.use((err, req, res, next) => {
 });
 
 // ─── AI CHAT ──────────────────────────────────────────────────
-app.post('/api/ai/chat', async (req, res) => {
+app.post('/api/ai/chat', (req, res) => {
   const { messages, system } = req.body;
   if (!Array.isArray(messages) || !messages.length) {
     return res.status(400).json({ error: 'messages required' });
   }
-
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return res.status(503).json({ error: 'AI not configured' });
-  }
+  if (!apiKey) return res.status(503).json({ error: 'AI not configured' });
 
-  const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(), 20000); // 20s hard timeout
+  const https = require('https');
+  const url = new URL((process.env.AI_BASE_URL || 'https://api.anthropic.com/v1') + '/chat/completions');
+  const model = process.env.AI_MODEL || 'commandcode';
 
-  try {
-    const aiBase = process.env.AI_BASE_URL || 'https://api.anthropic.com/v1';
-    const model = process.env.AI_MODEL || 'commandcode';
-    const isOpenAICompat = !aiBase.includes('anthropic.com');
+  const payload = JSON.stringify({
+    model,
+    max_tokens: 300,
+    stream: true,
+    messages: [
+      { role: 'system', content: system || '' },
+      ...messages.slice(-6),
+    ],
+  });
 
-    const reqBody = isOpenAICompat
-      ? { model, max_tokens: 300, stream: true, messages: [{ role: 'system', content: system || '' }, ...messages.slice(-6)] }
-      : { model, max_tokens: 300, system: system || '', messages: messages.slice(-6) };
+  const options = {
+    hostname: url.hostname,
+    port: 443,
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    timeout: 25000,
+  };
 
-    const headers = isOpenAICompat
-      ? { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
-      : { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };
+  let reply = '';
+  let buf = '';
+  let done = false;
 
-    const response = await fetch(`${aiBase}/chat/completions`, {
-      method: 'POST', headers, body: JSON.stringify(reqBody), signal: abort.signal,
-    });
-
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      throw new Error(`HTTP ${response.status}: ${errText.slice(0, 200)}`);
+  const proxyReq = https.request(options, (proxyRes) => {
+    if (proxyRes.statusCode !== 200) {
+      let errBody = '';
+      proxyRes.on('data', d => errBody += d);
+      proxyRes.on('end', () => {
+        if (!res.headersSent) res.status(502).json({ error: `Upstream ${proxyRes.statusCode}`, detail: errBody.slice(0, 200) });
+      });
+      return;
     }
 
-    // Stream-read the response body chunk by chunk, parse SSE
-    let reply = '';
-    let buf = '';
-    const decoder = new TextDecoder();
-
-    for await (const chunk of response.body) {
-      buf += decoder.decode(chunk, { stream: true });
+    proxyRes.setEncoding('utf8');
+    proxyRes.on('data', (chunk) => {
+      buf += chunk;
       const lines = buf.split('\n');
-      buf = lines.pop(); // keep incomplete last line
+      buf = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6).trim();
-        if (raw === '[DONE]') { buf = ''; break; }
+        if (raw === '[DONE]') { done = true; return; }
         try {
           const parsed = JSON.parse(raw);
-          reply += parsed.choices?.[0]?.delta?.content
-            || parsed.content?.[0]?.delta?.text
-            || '';
+          reply += parsed.choices?.[0]?.delta?.content || '';
         } catch { /* skip */ }
       }
-    }
+    });
 
-    clearTimeout(timeout);
-    res.json({ reply: reply.trim() });
-  } catch (err) {
-    clearTimeout(timeout);
+    proxyRes.on('end', () => {
+      if (!res.headersSent) res.json({ reply: reply.trim() });
+    });
+  });
+
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    if (!res.headersSent) res.status(504).json({ error: 'AI timeout' });
+  });
+
+  proxyReq.on('error', (err) => {
     console.error('[AI] Error:', err.message);
-    res.status(500).json({ error: 'AI error', detail: err.message });
-  }
+    if (!res.headersSent) res.status(500).json({ error: 'AI error', detail: err.message });
+  });
+
+  proxyReq.write(payload);
+  proxyReq.end();
 });
 
 // 404 for unknown API routes
