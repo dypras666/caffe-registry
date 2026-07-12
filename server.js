@@ -437,7 +437,8 @@ app.post('/api/superadmin/tenants/:id/redeploy', superadminAuth, async (req, res
     const [[t]] = await db.query('SELECT id, slug, backend_port, server_id, container_id FROM tenants WHERE id = ?', [req.params.id]);
     if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
 
-    await restartTenant(t.slug);
+    // Restart — allow failure (process may not exist yet)
+    try { await restartTenant(t.slug); } catch (_) {}
 
     // Health check loop — poll up to 30s
     let healthy = false;
