@@ -84,8 +84,15 @@ router.get('/:id/containers', superadminAuth, async (req, res) => {
         }
       } catch { /* stats n/a */ }
 
-      // Memory limit from tenant ram_mb
-      memLimit = tenant.ram_mb ? `${tenant.ram_mb}MiB` : null;
+      // Memory limit: actual from docker inspect, fallback tenant ram_mb
+      try {
+        const bytes = sshRun(server, `docker inspect -f '{{.HostConfig.Memory}}' ${dn} 2>/dev/null || echo 0`);
+        const b = parseInt(bytes);
+        if (b > 0) {
+          memLimit = b >= 1073741824 ? (b / 1073741824).toFixed(1) + 'GiB' : Math.round(b / 1048576) + 'MiB';
+        }
+      } catch { /* no limit set */ }
+      if (!memLimit && tenant.ram_mb) memLimit = `${tenant.ram_mb}MiB`;
 
       return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsed, memLimit };
     }));
