@@ -176,65 +176,50 @@ app.get('/api/tenant/:id/stats', tenantAuth, async (req, res) => {
     if (tenants.length === 0) {
       return res.status(404).json({ error: 'Tenant tidak ditemukan' });
     }
-    
-    const tenant = tenants[0];
-    
-    // Connect to tenant DB to get stats
-    const mysql = require('mysql2/promise');
-    const tenantConn = await mysql.createConnection({
-      host: '127.0.0.1',
-      user: tenant.db_name.replace('cafe_', 'cafe_').substring(0, 16),
-      password: process.env.TENANT_DB_PASS || tenant.admin_password,
-      database: tenant.db_name
-    });
 
-    // Get table counts
-    let stats = {
-      tables: 0,
-      orders: 0,
-      products: 0,
-      users: 0,
-      revenue_today: 0,
-      revenue_month: 0
-    };
+    const tenant = tenants[0];
+
+    const stats = { tables: 0, orders: 0, products: 0, users: 0, revenue_today: 0, revenue_month: 0 };
+
+    let tenantConn;
+    try {
+      const mysql = require('mysql2/promise');
+      tenantConn = await mysql.createConnection({
+        host: '127.0.0.1',
+        user: (tenant.db_name || '').replace('cafe_', 'cafe_').substring(0, 16),
+        password: process.env.TENANT_DB_PASS || tenant.db_pass || '',
+        database: tenant.db_name,
+        connectTimeout: 3000,
+      });
+    } catch (_) {
+      return res.json({ stats: { ...stats, error: 'DB not available' } });
+    }
 
     try {
       const [tables] = await tenantConn.query("SHOW TABLES");
       stats.tables = tables.length;
-
-      // Check if orders table exists and get counts
       const tableNames = tables.map(t => Object.values(t)[0]);
-      
+
       if (tableNames.includes('orders')) {
         const [orderCount] = await tenantConn.query('SELECT COUNT(*) as count FROM orders');
         stats.orders = orderCount[0].count;
-        
-        const [todayRevenue] = await tenantConn.query(
-          "SELECT COALESCE(SUM(total), 0) as sum FROM orders WHERE DATE(created_at) = CURDATE() AND status != 'cancelled'"
-        );
+        const [todayRevenue] = await tenantConn.query("SELECT COALESCE(SUM(total), 0) as sum FROM orders WHERE DATE(created_at) = CURDATE() AND status != 'cancelled'");
         stats.revenue_today = todayRevenue[0].sum;
-        
-        const [monthRevenue] = await tenantConn.query(
-          "SELECT COALESCE(SUM(total), 0) as sum FROM orders WHERE MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE()) AND status != 'cancelled'"
-        );
+        const [monthRevenue] = await tenantConn.query("SELECT COALESCE(SUM(total), 0) as sum FROM orders WHERE MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE()) AND status != 'cancelled'");
         stats.revenue_month = monthRevenue[0].sum;
       }
-      
       if (tableNames.includes('products')) {
         const [productCount] = await tenantConn.query('SELECT COUNT(*) as count FROM products');
         stats.products = productCount[0].count;
       }
-      
       if (tableNames.includes('users')) {
         const [userCount] = await tenantConn.query('SELECT COUNT(*) as count FROM users');
         stats.users = userCount[0].count;
       }
-    } catch (e) {
-      // Tables might not exist yet
-    }
+    } catch (_) {}
 
-    await tenantConn.end();
-    
+    if (tenantConn) await tenantConn.end();
+
     res.json({
       ...stats,
       tier: tenant.pricing_tier,
