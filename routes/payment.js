@@ -59,6 +59,11 @@ router.get('/methods', async (req, res) => {
     for (const r of rows) {
       if (!seen.has(r.type)) {
         seen.add(r.type);
+        // Override account_number from system_settings for bank_transfer
+        if (r.type === 'bank_transfer') {
+          const setting = settingsRows.find(s => s.setting_key === 'payment_manual_account_number');
+          if (setting) r.account_number = setting.setting_value;
+        }
         deduped.push(r);
       }
     }
