@@ -60,8 +60,12 @@ router.get('/methods', async (req, res) => {
       if (!seen.has(r.type)) {
         seen.add(r.type);
         // Override account_number from system_settings for bank_transfer
+        // (fetch full payment_manual settings)
+        const [manualSettings] = await db.query(
+          "SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'payment_manual_%'"
+        );
         if (r.type === 'bank_transfer') {
-          const setting = settingsRows.find(s => s.setting_key === 'payment_manual_account_number');
+          const setting = manualSettings.find(s => s.setting_key === 'payment_manual_account_number');
           if (setting) r.account_number = setting.setting_value;
         }
         deduped.push(r);
