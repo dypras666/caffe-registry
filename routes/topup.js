@@ -76,8 +76,7 @@ router.post('/request', tenantAuth, async (req, res) => {
     let qris_expires_at = null;
 
     if (useCode) {
-      const usedCodes = await getUsedCodesToday(db);
-      unique_code = await generateUniqueCode(usedCodes);
+      unique_code = await generateUniqueCode(amount);
       if (unique_code) transfer_amount = amount + unique_code;
     }
 
