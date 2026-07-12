@@ -137,6 +137,36 @@ const tenantAuth = (req, res, next) => {
   }
 };
 
+// GET /api/tenant/me — current tenant profile from token
+app.get('/api/tenant/me', tenantAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, name, slug, email, status, container_status, pricing_tier, admin_url, admin_email, ram_mb, cpu_cores, disk_mb, custom_domain, balance, created_at FROM tenants WHERE id = ?',
+      [req.tenantUser.tenantId]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Tenant not found' });
+    res.json({ tenant: rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/tenant/me — update current tenant profile
+app.put('/api/tenant/me', tenantAuth, async (req, res) => {
+  try {
+    const allowed = ['name', 'email', 'phone', 'custom_domain'];
+    const updates = {};
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    }
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No valid fields' });
+    await db.query('UPDATE tenants SET ? WHERE id = ?', [updates, req.tenantUser.tenantId]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ========== TENANT STATS ==========
 
 // Get tenant statistics (for dashboard)
