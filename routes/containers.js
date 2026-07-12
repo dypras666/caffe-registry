@@ -40,7 +40,7 @@ function sshRun(server, cmd) {
 // ─── Helpers ───────────────────────────────────────────────
 async function getTenantServer(id) {
   const [[t]] = await db.query(
-    'SELECT id, slug, backend_port, ui_port, admin_port, server_id FROM tenants WHERE id = ?', [id]
+    'SELECT id, slug, ram_mb, backend_port, ui_port, admin_port, server_id FROM tenants WHERE id = ?', [id]
   );
   if (!t) throw new Error('Tenant not found');
   if (!t.server_id) throw new Error('Tenant has no server assigned');
@@ -84,15 +84,8 @@ router.get('/:id/containers', superadminAuth, async (req, res) => {
         }
       } catch { /* stats n/a */ }
 
-      // Container memory limit from docker inspect (0 = unlimited)
-      try {
-        const bytes = sshRun(server, `docker inspect -f '{{.HostConfig.Memory}}' ${dn} 2>/dev/null || echo 0`);
-        const b = parseInt(bytes);
-        if (b > 0) {
-          const mb = (b / 1024 / 1024).toFixed(0);
-          memLimit = mb > 1024 ? (b / 1024 / 1024 / 1024).toFixed(1) + 'GiB' : mb + 'MiB';
-        }
-      } catch { /* no limit */ }
+      // Memory limit from tenant ram_mb
+      memLimit = tenant.ram_mb ? `${tenant.ram_mb}MiB` : null;
 
       return { ...CONTAINER_META[key], port: portMap[key], status, docker_name: dn, cpu, memPerc, memUsed, memLimit };
     }));

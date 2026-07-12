@@ -282,24 +282,28 @@ init().catch(e => { console.error(e); process.exit(1); });
       run(`docker rm -f ${beCName} ${slug}-ui ${slug}-admin 2>/dev/null || true`);
 
       // Backend container (network mode — connects to MySQL container)
-      run(`docker run -d --name ${beCName} --restart unless-stopped \\
-        --network ${networkName} \\
-        -v ${backendDir}:/app \\
-        -e PORT=3000 \\
-        -e DB_HOST=${dbCName} -e DB_PORT=3306 \\
-        -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} \\
-        -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} \\
-        -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'} \\
+      const memFlag = tenant?.ram_mb ? `--memory=${tenant.ram_mb}m` : '';
+      run(`docker run -d --name ${beCName} --restart unless-stopped \\\
+        --network ${networkName} \\\
+        -v ${backendDir}:/app \\\
+        ${memFlag} \\\
+        -e PORT=3000 \\\
+        -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\
+        -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} \\\
+        -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} \\\
+        -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'} \\\
         cafe-backend:latest`);
 
       // UI container (expose port for tenant-router)
-      run(`docker run -d --name ${slug}-ui --restart unless-stopped \\
-        --network ${networkName} \\
+      run(`docker run -d --name ${slug}-ui --restart unless-stopped \\\
+        --network ${networkName} \\\
+        ${memFlag} \\\
         -p ${uiPort}:80 cafe-ui:latest`);
 
       // Admin container
-      run(`docker run -d --name ${slug}-admin --restart unless-stopped \\
-        --network ${networkName} \\
+      run(`docker run -d --name ${slug}-admin --restart unless-stopped \\\
+        --network ${networkName} \\\
+        ${memFlag} \\\
         -p ${adminPort}:80 cafe-admin:latest`);
 
       run(`sleep 5`);
@@ -391,16 +395,18 @@ async function repairProvisioning(tenantId) {
   const beCName = dockerBackendContainer(tenant.slug);
   const beRunning = run(`docker inspect -f {{.State.Running}} ${beCName} 2>/dev/null || echo notfound`).trim();
   if (beRunning !== 'true') {
+    const ramMb = tenant.ram_mb || 256;
     run(`docker rm -f ${beCName} 2>/dev/null || true`);
-    run(`docker run -d --name ${beCName} --restart unless-stopped \\
-      --network ${net} \\
-      -v ${TENANTS_DIR}/${tenant.slug}/backend:/app \\
-      -e PORT=3000 \\
-      -e DB_HOST=${dbCName} -e DB_PORT=3306 \\
-      -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} \\
-      -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} \\
-      -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' \\
-      -e PRICING_TIER=${tenant.pricing_tier || 'free'} \\
+    run(`docker run -d --name ${beCName} --restart unless-stopped \\\
+      --network ${net} \\\
+      --memory=${ramMb}m \\\
+      -v ${TENANTS_DIR}/${tenant.slug}/backend:/app \\\
+      -e PORT=3000 \\\
+      -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\
+      -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} \\\
+      -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} \\\
+      -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' \\\
+      -e PRICING_TIER=${tenant.pricing_tier || 'free'} \\\
       cafe-backend:latest`);
     repairs.push('backend');
   }
@@ -408,20 +414,22 @@ async function repairProvisioning(tenantId) {
   // UI
   const uiRunning = run(`docker inspect -f {{.State.Running}} ${tenant.slug}-ui 2>/dev/null || echo notfound`).trim();
   if (uiRunning !== 'true') {
-    const uiPort = tenant.ui_port || (tenant.backend_port ? tenant.backend_port + 1 : 3300);
     run(`docker rm -f ${tenant.slug}-ui 2>/dev/null || true`);
-    run(`docker run -d --name ${tenant.slug}-ui --restart unless-stopped \\
-      --network ${net} -p ${uiPort}:80 cafe-ui:latest`);
+    run(`docker run -d --name ${tenant.slug}-ui --restart unless-stopped \\\
+      --network ${net} \\\
+      --memory=${ramMb}m \\\
+      -p ${tenant.ui_port}:80 cafe-ui:latest`);
     repairs.push('ui');
   }
 
   // Admin
   const adminRunning = run(`docker inspect -f {{.State.Running}} ${tenant.slug}-admin 2>/dev/null || echo notfound`).trim();
   if (adminRunning !== 'true') {
-    const adminPort = tenant.admin_port || (tenant.backend_port ? tenant.backend_port + 2 : 3301);
     run(`docker rm -f ${tenant.slug}-admin 2>/dev/null || true`);
-    run(`docker run -d --name ${tenant.slug}-admin --restart unless-stopped \\
-      --network ${net} -p ${adminPort}:80 cafe-admin:latest`);
+    run(`docker run -d --name ${tenant.slug}-admin --restart unless-stopped \\\
+      --network ${net} \\\
+      --memory=${ramMb}m \\\
+      -p ${tenant.admin_port}:80 cafe-admin:latest`);
     repairs.push('admin');
   }
 
