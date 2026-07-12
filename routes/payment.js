@@ -146,6 +146,7 @@ router.get('/test/duitku', async (req, res) => {
 
     // Minimal test — create a dummy transaction
     const baseUrl = isProd ? 'https://passport.duitku.com' : 'https://sandbox.duitku.com';
+    const apiPath = '/webapi/api/merchant/v2/inquiry';
     const paymentAmount = 10000;
     const merchantOrderId = 'TEST-' + Date.now();
     const productDetails = 'Test Payment';
@@ -167,11 +168,13 @@ router.get('/test/duitku', async (req, res) => {
       returnUrl,
       callbackUrl,
       signature,
+      expiryPeriod: 60,
+      paymentMethod: 'VA',  // Mandiri VA by default
     });
 
     const http = require('https');
     const r = await new Promise((resolve, reject) => {
-      const req = http.request(`${baseUrl}/webapi/api/merchant/transaction/create`, {
+      const req = http.request(`${baseUrl}${apiPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
         timeout: 15000,
