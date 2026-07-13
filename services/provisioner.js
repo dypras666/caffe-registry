@@ -10,7 +10,7 @@ function mysqlExec(sql) {
   run(`MYSQL_PWD="${pass.replace(/"/g, '\\"')}" mysql -u root -e "${sql.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`);
 }
 
-const TEMPLATE_DIR = '/opt/cafe-registry/templates';
+const TEMPLATE_DIR = '/opt/caffe-registry/templates';
 const TENANTS_DIR = '/opt/cafe-azzura/tenants';
 const RELEASES_DIR = '/opt/cafe-registry/releases';
 
@@ -268,7 +268,7 @@ async function init() {
 init().catch(e => { console.error(e); process.exit(1); });
 `;
       run(`cat > ${backendDir}/init-db.js << 'INITSQLEOF'\n${initSQL}\nINITSQLEOF`);
-      run(`cd ${backendDir} && node init-db.js 2>&1`);
+      run(`docker run --rm --network ${networkName} -v ${backendDir}:/app node:18-alpine node /app/init-db.js 2>&1`);
     });
 
     // ═══ 10. Start containers (backend, ui, admin) ═══
