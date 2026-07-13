@@ -120,13 +120,7 @@ async function provisionTenant(tenantId, slug, email, password) {
     // ═══ 2. MySQL container ═══
     await logProvisionTimed(tenantId, slug, 'docker.db.create', async () => {
       run(`docker rm -f ${dbCName} 2>/dev/null || true`);
-      run(`docker run -d --name ${dbCName} --network ${networkName} --restart unless-stopped \\
-        -e MYSQL_ROOT_PASSWORD=${dbRootPass} \\
-        -e MYSQL_DATABASE=${dbName} \\
-        -e MYSQL_USER=${dbUser} \\
-        -e MYSQL_PASSWORD=${dbPass} \\
-        -v ${TENANTS_DIR}/${slug}/mysql:/var/lib/mysql \\
-        mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci`);
+      run(`docker run -d --name ${dbCName} --network ${networkName} --restart unless-stopped -e MYSQL_ROOT_PASSWORD=${dbRootPass} -e MYSQL_DATABASE=${dbName} -e MYSQL_USER=${dbUser} -e MYSQL_PASSWORD=${dbPass} -v ${TENANTS_DIR}/${slug}/mysql:/var/lib/mysql mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci`);
 
       // Save network info
       await db.query(
@@ -283,27 +277,14 @@ init().catch(e => { console.error(e); process.exit(1); });
 
       // Backend container (no volume mount — use image directly with env vars)
       const memFlag = tenant?.ram_mb ? `--memory=${tenant.ram_mb}m` : '';
-      run(`docker run -d --name ${beCName} --restart unless-stopped \\\\
-        --network ${networkName} \\\\
-        ${memFlag} \\\\
-        -e PORT=3000 \\\\
-        -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\\
-        -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} \\\\
-        -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} \\\\
-        -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'} \\\\
-        cafe-backend:latest`);
+      const envVars = `-e PORT=3000 -e DB_HOST=${dbCName} -e DB_PORT=3306 -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'}`;
+      run(`docker run -d --name ${beCName} --restart unless-stopped --network ${networkName} ${memFlag} ${envVars} cafe-backend:latest`);
 
       // UI container (expose port for tenant-router)
-      run(`docker run -d --name ${slug}-ui --restart unless-stopped \\\
-        --network ${networkName} \\\
-        ${memFlag} \\\
-        -p ${uiPort}:80 cafe-ui:latest`);
+      run(`docker run -d --name ${slug}-ui --restart unless-stopped --network ${networkName} ${memFlag} -p ${uiPort}:80 cafe-ui:latest`);
 
       // Admin container
-      run(`docker run -d --name ${slug}-admin --restart unless-stopped \\\
-        --network ${networkName} \\\
-        ${memFlag} \\\
-        -p ${adminPort}:80 cafe-admin:latest`);
+      run(`docker run -d --name ${slug}-admin --restart unless-stopped --network ${networkName} ${memFlag} -p ${adminPort}:80 cafe-admin:latest`);
 
       run(`sleep 5`);
     });
@@ -375,13 +356,7 @@ async function repairProvisioning(tenantId) {
     const [netRow] = await db.query('SELECT * FROM tenant_networks WHERE tenant_id=?', [tenantId]);
     const rootPass = netRow?.db_root_password || crypto.randomBytes(12).toString('hex');
     run(`docker rm -f ${dbCName} 2>/dev/null || true`);
-    run(`docker run -d --name ${dbCName} --network ${net} --restart unless-stopped \\
-      -e MYSQL_ROOT_PASSWORD=${rootPass} \\
-      -e MYSQL_DATABASE=${tenant.db_name} \\
-      -e MYSQL_USER=${tenant.db_user} \\
-      -e MYSQL_PASSWORD=${tenant.db_pass} \\
-      -v ${TENANTS_DIR}/${tenant.slug}/mysql:/var/lib/mysql \\
-      mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci`);
+    run(`docker run -d --name ${dbCName} --network ${net} --restart unless-stopped -e MYSQL_ROOT_PASSWORD=${rootPass} -e MYSQL_DATABASE=${tenant.db_name} -e MYSQL_USER=${tenant.db_user} -e MYSQL_PASSWORD=${tenant.db_pass} -v ${TENANTS_DIR}/${tenant.slug}/mysql:/var/lib/mysql mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci`);
 
     if (!netRow) {
       await db.query('INSERT INTO tenant_networks (tenant_id, slug, network_name, db_container_id, db_port, db_root_password) VALUES (?,?,?,?,?,?)',
@@ -397,16 +372,8 @@ async function repairProvisioning(tenantId) {
     // Backend container (no volume mount — use image directly)
     const ramMb = tenant.ram_mb || 256;
     run(`docker rm -f ${beCName} 2>/dev/null || true`);
-    run(`docker run -d --name ${beCName} --restart unless-stopped \\\\
-      --network ${net} \\\\
-      --memory=${ramMb}m \\\\
-      -e PORT=3000 \\\\
-      -e DB_HOST=${dbCName} -e DB_PORT=3306 \\\\
-      -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} \\\\
-      -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} \\\\
-      -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' \\\\
-      -e PRICING_TIER=${tenant.pricing_tier || 'free'} \\\\
-      cafe-backend:latest`);
+    const beEnv = `-e PORT=3000 -e DB_HOST=${dbCName} -e DB_PORT=3306 -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' -e PRICING_TIER=${tenant.pricing_tier || 'free'}`;
+    run(`docker run -d --name ${beCName} --restart unless-stopped --network ${net} --memory=${ramMb}m ${beEnv} cafe-backend:latest`);
     repairs.push('backend');
   }
 
@@ -414,10 +381,7 @@ async function repairProvisioning(tenantId) {
   const uiRunning = run(`docker inspect -f {{.State.Running}} ${tenant.slug}-ui 2>/dev/null || echo notfound`).trim();
   if (uiRunning !== 'true') {
     run(`docker rm -f ${tenant.slug}-ui 2>/dev/null || true`);
-    run(`docker run -d --name ${tenant.slug}-ui --restart unless-stopped \\\
-      --network ${net} \\\
-      --memory=${ramMb}m \\\
-      -p ${tenant.ui_port}:80 cafe-ui:latest`);
+    run(`docker run -d --name ${tenant.slug}-ui --restart unless-stopped --network ${net} --memory=${ramMb}m -p ${tenant.ui_port}:80 cafe-ui:latest`);
     repairs.push('ui');
   }
 
@@ -425,10 +389,7 @@ async function repairProvisioning(tenantId) {
   const adminRunning = run(`docker inspect -f {{.State.Running}} ${tenant.slug}-admin 2>/dev/null || echo notfound`).trim();
   if (adminRunning !== 'true') {
     run(`docker rm -f ${tenant.slug}-admin 2>/dev/null || true`);
-    run(`docker run -d --name ${tenant.slug}-admin --restart unless-stopped \\\
-      --network ${net} \\\
-      --memory=${ramMb}m \\\
-      -p ${tenant.admin_port}:80 cafe-admin:latest`);
+    run(`docker run -d --name ${tenant.slug}-admin --restart unless-stopped --network ${net} --memory=${ramMb}m -p ${tenant.admin_port}:80 cafe-admin:latest`);
     repairs.push('admin');
   }
 
