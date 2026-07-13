@@ -929,7 +929,9 @@ app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
 
     const beCName = `${t.slug}-backend`;
     const { execSync } = require('child_process');
-    const cmd = `docker exec ${beCName} mysql -h 127.0.0.1 -u ${t.db_user} -p${t.db_pass} ${t.db_name} -e "UPDATE users SET password='${hashedPassword.replace(/'/g, "'\\''")}' WHERE role='admin' LIMIT 1" 2>&1`;
+    // Escape bcrypt hash for bash (dollar signs get expanded)
+    const safeHash = hashedPassword.replace(/\$/g, '\\$');
+    const cmd = `docker exec ${beCName} mysql -h 127.0.0.1 -u ${t.db_user} -p${t.db_pass} ${t.db_name} -e "UPDATE users SET password='${safeHash}' WHERE role='admin' LIMIT 1" 2>&1`;
     const out = execSync(cmd, { encoding: 'utf8', timeout: 15000 });
 
     await db.query(
