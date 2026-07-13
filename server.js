@@ -928,11 +928,17 @@ app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     const beCName = `${t.slug}-backend`;
-    const { execSync } = require('child_process');
-    // Escape bcrypt hash for bash (dollar signs get expanded)
-    const safeHash = hashedPassword.replace(/\$/g, '\\$');
-    const cmd = `docker exec ${beCName} mysql -h 127.0.0.1 -u ${t.db_user} -p${t.db_pass} ${t.db_name} -e "UPDATE users SET password='${safeHash}' WHERE role='admin' LIMIT 1" 2>&1`;
-    const out = execSync(cmd, { encoding: 'utf8', timeout: 15000 });
+
+    // Use spawnSync (no shell) to avoid bash escaping issues with bcrypt $ signs
+    const { spawnSync } = require('child_process');
+    const sql = `UPDATE users SET password='${hashedPassword}' WHERE role='admin' LIMIT 1`;
+    const result = spawnSync('docker', ['exec', '-i', beCName, 'mysql', '-h', '127.0.0.1', '-u', t.db_user, `-p${t.db_pass}`, t.db_name], {
+      input: sql,
+      timeout: 15000,
+      encoding: 'utf8',
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`mysql exit ${result.status}: ${result.stderr}`);
 
     await db.query(
       "UPDATE tenants SET container_password = ?, updated_at = NOW() WHERE id = ?",
