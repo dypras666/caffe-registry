@@ -927,7 +927,7 @@ app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
     const bcrypt = require('bcryptjs');
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    const beCName = `${t.slug}-backend`;
+    const beCName = `${t.slug}-db`;
 
     // Use spawnSync (no shell) to avoid bash escaping issues with bcrypt $ signs
     const { spawnSync } = require('child_process');
