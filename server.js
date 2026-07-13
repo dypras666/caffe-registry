@@ -750,6 +750,38 @@ app.use('/api/backup', backupRouter);
 app.use('/api/addons', addonsRouter);
 app.use('/api/tenants', containersRouter);
 
+// ─── ACTIVITY LOG ──────────────────────────────────────────────
+// Ensures activity_logs table exists
+async function ensureActivityLogTable() {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS activity_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      admin_id INT NOT NULL,
+      admin_email VARCHAR(100) NOT NULL,
+      action VARCHAR(50) NOT NULL,
+      target_type VARCHAR(50) NOT NULL,
+      target_id VARCHAR(50),
+      detail TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_action (action),
+      INDEX idx_admin (admin_id),
+      INDEX idx_target (target_type, target_id),
+      INDEX idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  } catch (e) { console.warn('[ActivityLog] Init error:', e.message); }
+}
+
+async function logActivity(req, action, targetType, targetId, detail) {
+  try {
+    const adminId = req.admin?.id || req.user?.id || 0;
+    const adminEmail = req.admin?.email || req.user?.email || 'unknown';
+    await db.query(
+      'INSERT INTO activity_logs (admin_id, admin_email, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)',
+      [adminId, adminEmail, action, targetType, targetId, detail ? String(detail).substring(0, 500) : null]
+    );
+  } catch (e) { /* non-fatal */ }
+}
+
 startAutoScaler();
 
 // Start DB-backed queue worker (replaces billing scheduler)
@@ -769,6 +801,9 @@ startAutoScaler();
     console.error('[Queue] Init error:', e.message);
   }
 })();
+
+// Initialize activity log table
+ensureActivityLogTable();
 
 // ========== LEGACY ROUTES ==========
 
@@ -968,6 +1003,8 @@ app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
         },
       }).catch(e => console.warn(`[Email] Failed: ${e.message}`));
     }
+
+    logActivity(req, 'reset_password', 'tenant', t.id, `Password direset untuk ${t.name || t.slug} (${t.admin_email})`);
 
     res.json({ success: true, new_password: newPassword, email: t.admin_email });
   } catch (error) {
@@ -1529,6 +1566,21 @@ app.post('/api/ai/chat', (req, res) => {
 });
 
 // 404 for unknown API routes
+// ─── ACTIVITY LOG VIEWER ───────────────────────────────────────
+app.get('/api/superadmin/activity-log', superadminAuth, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+    const [rows] = await db.query(
+      'SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT ? OFFSET ?',
+      [limit, offset]
+    );
+    const [[{ total }]] = await db.query('SELECT COUNT(*) as total FROM activity_logs');
+    res.json({ logs: rows, total });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'Route not found' });
