@@ -756,6 +756,12 @@ startAutoScaler();
 (async () => {
   try {
     await queue.ensureTable();
+    // Reset stuck processing jobs (e.g. BCA scan hang)
+    try {
+      const db = require('./config/database');
+      const [stuck] = await db.query("UPDATE job_queue SET status='pending', attempts=0, error='startup reset (stuck >5m)', started_at=NULL WHERE status='processing' AND started_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)");
+      if (stuck.affectedRows > 0) console.log(`[Queue] Reset ${stuck.affectedRows} stuck jobs`);
+    } catch (e) { /* non-fatal */ }
     await queue.scheduleRecurring();
     queue.startWorker({ intervalMs: 10_000, batchSize: 10 });
     console.log('[Queue] Worker started');

@@ -94,7 +94,11 @@ async function processBatch(batchSize = 10) {
 
       try {
         const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
-        await handler(payload, job);
+        const timeoutMs = 30000; // 30s max per job handler
+        await Promise.race([
+          handler(payload, job),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Handler timeout')), timeoutMs)),
+        ]);
         await db.query(
           "UPDATE job_queue SET status='done', done_at=NOW() WHERE id=?",
           [job.id]
