@@ -255,7 +255,8 @@ async function init() {
   await conn.query("INSERT INTO users (name, email, password, role) VALUES (?,?,?,?)",
     ['Admin', seed.adminEmail, hp, 'admin']);
 
-  await conn.query("INSERT INTO settings (setting_key, setting_value) VALUES ('cafe_name', ?), ('cafe_address', '') ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [seed.cafeName || 'Cafe']).catch(()=>{});
+  await conn.query("INSERT INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public, sort_order) VALUES ('cafe_name', ?, 'text', 'general', 'Nama Cafe', 1, 1) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [seed.cafeName || 'Cafe']).catch(()=>{});
+  await conn.query("INSERT INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public, sort_order) VALUES ('cafe_address', '', 'text', 'general', 'Alamat Cafe', 1, 2) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)").catch(()=>{});
   await conn.query("INSERT IGNORE INTO branches (name, address, phone, is_active) VALUES (?, '', '', 1)", [seed.cafeName || 'Cafe']).catch(()=>{});
   await conn.end();
   console.log('DB initialized');
