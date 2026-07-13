@@ -61,8 +61,8 @@ setInterval(async () => {
       if (data?.statusCode === '00' && (data.paymentStatus === '00' || data.paymentStatus === '01')) {
         const amount = reqRow.transfer_amount || reqRow.amount;
         await db.query(
-          "UPDATE topup_requests SET status = 'confirmed', confirmed_at = NOW(), auto_confirmed = 1 WHERE id = ? AND status = 'pending'",
-          [reqRow.id]
+          "UPDATE topup_requests SET status = 'confirmed', confirmed_at = NOW(), auto_confirmed = 1, matched_ref = ? WHERE id = ? AND status = 'pending'",
+          [reqRow.duitku_ref, reqRow.id]
         );
         await db.query("UPDATE tenants SET balance = balance + ? WHERE id = ?", [amount, reqRow.tenant_id]);
       }
