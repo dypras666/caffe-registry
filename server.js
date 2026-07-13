@@ -773,8 +773,8 @@ async function ensureActivityLogTable() {
 
 async function logActivity(req, action, targetType, targetId, detail) {
   try {
-    const adminId = req.admin?.id || req.user?.id || 0;
-    const adminEmail = req.admin?.email || req.user?.email || 'unknown';
+    const adminId = req.user?.id || 0;
+    const adminEmail = req.user?.email || 'unknown';
     await db.query(
       'INSERT INTO activity_logs (admin_id, admin_email, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)',
       [adminId, adminEmail, action, targetType, targetId, detail ? String(detail).substring(0, 500) : null]
