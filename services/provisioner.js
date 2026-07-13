@@ -120,7 +120,7 @@ async function provisionTenant(tenantId, slug, email, password) {
     // ═══ 2. MySQL container ═══
     await logProvisionTimed(tenantId, slug, 'docker.db.create', async () => {
       run(`docker rm -f ${dbCName} 2>/dev/null || true`);
-      run(`docker run -d --name ${dbCName} --network ${networkName} --restart unless-stopped -e MYSQL_ROOT_PASSWORD=${dbRootPass} -e MYSQL_DATABASE=${dbName} -e MYSQL_USER=${dbUser} -e MYSQL_PASSWORD=${dbPass} -v ${TENANTS_DIR}/${slug}/mysql:/var/lib/mysql mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci`);
+      run(`docker run -d --name ${dbCName} --network ${networkName} --restart unless-stopped --memory=200m --memory-swap=256m -e MYSQL_ROOT_PASSWORD=${dbRootPass} -e MYSQL_DATABASE=${dbName} -e MYSQL_USER=${dbUser} -e MYSQL_PASSWORD=${dbPass} -v ${TENANTS_DIR}/${slug}/mysql:/var/lib/mysql mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --innodb-buffer-pool-size=64M --innodb-log-file-size=16M --max-connections=50 --performance-schema=OFF`);
 
       // Save network info
       await db.query(
@@ -132,11 +132,12 @@ async function provisionTenant(tenantId, slug, email, password) {
       for (let i = 0; i < 30; i++) {
         try {
           const ok = run(`docker exec ${dbCName} mysqladmin ping --silent 2>/dev/null`).trim();
-          if (ok === 'mysqld is alive') { console.log(`[${slug}] MySQL ready`); return; }
+          if (ok === 'mysqld is alive') { console.log(`[${slug}] MySQL ready`); break; }
         } catch (_) {}
         run(`sleep 2`);
       }
-      throw new Error('MySQL not ready after 60s');
+      // Sync user password — env MYSQL_PASSWORD only works on first init (empty volume)
+      run(`docker exec ${dbCName} mysql -u root -e "ALTER USER '${dbUser}'@'%' IDENTIFIED BY '${dbPass}'; FLUSH PRIVILEGES;" 2>&1 || true`);
     });
 
     // ═══ 3. Setup backend directories ═══
@@ -356,13 +357,18 @@ async function repairProvisioning(tenantId) {
     const [netRow] = await db.query('SELECT * FROM tenant_networks WHERE tenant_id=?', [tenantId]);
     const rootPass = netRow?.db_root_password || crypto.randomBytes(12).toString('hex');
     run(`docker rm -f ${dbCName} 2>/dev/null || true`);
-    run(`docker run -d --name ${dbCName} --network ${net} --restart unless-stopped -e MYSQL_ROOT_PASSWORD=${rootPass} -e MYSQL_DATABASE=${tenant.db_name} -e MYSQL_USER=${tenant.db_user} -e MYSQL_PASSWORD=${tenant.db_pass} -v ${TENANTS_DIR}/${tenant.slug}/mysql:/var/lib/mysql mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci`);
+    run(`docker run -d --name ${dbCName} --network ${net} --restart unless-stopped --memory=200m --memory-swap=256m -e MYSQL_ROOT_PASSWORD=${rootPass} -e MYSQL_DATABASE=${tenant.db_name} -e MYSQL_USER=${tenant.db_user} -e MYSQL_PASSWORD=${tenant.db_pass} -v ${TENANTS_DIR}/${tenant.slug}/mysql:/var/lib/mysql mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --innodb-buffer-pool-size=64M --innodb-log-file-size=16M --max-connections=50 --performance-schema=OFF`);
 
     if (!netRow) {
       await db.query('INSERT INTO tenant_networks (tenant_id, slug, network_name, db_container_id, db_port, db_root_password) VALUES (?,?,?,?,?,?)',
         [tenantId, tenant.slug, net, dbCName, 3306, rootPass]);
     }
     repairs.push('db');
+  }
+
+  // Sync user password — volume may persist old password from first init
+  if (run(`docker inspect -f {{.State.Running}} ${dbCName} 2>/dev/null || echo notfound`).trim() === 'true') {
+    run(`docker exec ${dbCName} mysql -u root -e "ALTER USER '${tenant.db_user}'@'%' IDENTIFIED BY '${tenant.db_pass}'; FLUSH PRIVILEGES;" 2>&1 || true`);
   }
 
   // Backend container
