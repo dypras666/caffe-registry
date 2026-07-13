@@ -12,6 +12,64 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const QRIS_EXPIRY_MINUTES = 5;
 
+function uuidv4() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+async function getDuitkuConfig() {
+  const rows = await db.query(
+    "SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'payment_duitku_%'"
+  );
+  const m = {};
+  for (const [k, v] of rows) m[k] = v;
+  return m;
+}
+
+async function checkDuitkuStatusByRef(duitku_ref) {
+  const cfg = await getDuitkuConfig();
+  if (!cfg.payment_duitku_api_key) return null;
+  const isProd = cfg.payment_duitku_is_production === '1';
+  const baseUrl = isProd ? 'https://passport.duitku.com' : 'https://sandbox.duitku.com';
+  const body = {
+    merchantCode: cfg.payment_duitku_merchant_code,
+    reference: duitku_ref,
+    signature: crypto.createHash('sha256')
+      .update(cfg.payment_duitku_merchant_code + duitku_ref + cfg.payment_duitku_api_key)
+      .digest('hex'),
+  };
+  try {
+    const res = await fetch(baseUrl + '/webapi/api/merchant/v1/inquiry/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
+// Auto-check pending Duitku topups every 2 minutes
+setInterval(async () => {
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM topup_requests WHERE status = 'pending' AND duitku_ref IS NOT NULL AND duitku_ref != ''"
+    );
+    for (const reqRow of rows) {
+      const data = await checkDuitkuStatusByRef(reqRow.duitku_ref);
+      if (data?.statusCode === '00' && (data.paymentStatus === '00' || data.paymentStatus === '01')) {
+        const amount = reqRow.transfer_amount || reqRow.amount;
+        await db.query(
+          "UPDATE topup_requests SET status = 'confirmed', confirmed_at = NOW(), auto_confirmed = 1 WHERE id = ? AND status = 'pending'",
+          [reqRow.id]
+        );
+        await db.query("UPDATE tenants SET balance = balance + ? WHERE id = ?", [amount, reqRow.tenant_id]);
+      }
+    }
+  } catch (_) {}
+}, 2 * 60 * 1000);
+
 // Generate a unique code (1–999) so that transfer_amount = amount + code is
 // globally unique across ALL pending requests today (not just same base amount).
 async function generateUniqueCode(amount) {
