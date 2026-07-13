@@ -86,8 +86,8 @@ router.post('/request', tenantAuth, async (req, res) => {
     }
 
     const [r] = await db.query(
-      'INSERT INTO topup_requests (tenant_id, amount, unique_code, transfer_amount, payment_method_id, status, qris_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [tenantId, amount, unique_code, transfer_amount, payment_method_id, 'pending', qris_expires_at]
+      'INSERT INTO topup_requests (tenant_id, amount, unique_code, transfer_amount, payment_method_id, status, qris_expires_at, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [tenantId, amount, unique_code, transfer_amount, payment_method_id, 'pending', qris_expires_at, uuidv4()]
     );
     res.status(201).json({
       success: true,
@@ -664,6 +664,28 @@ router.post('/:id/check-duitku', tenantAuth, async (req, res) => {
   }
 });
 
+
+// POST /api/topup/superadmin/check-duitku — superadmin manual check
+router.post('/superadmin/check-duitku', superadminAuth, async (req, res) => {
+  try {
+    const { topup_id } = req.body;
+    const [[reqRow]] = await db.query('SELECT * FROM topup_requests WHERE id = ?', [topup_id]);
+    if (!reqRow) return res.status(404).json({ error: 'Topup not found' });
+    if (!reqRow.duitku_ref) return res.json({ matched: false, status: reqRow.status, error: 'Belum ada Duitku reference' });
+    if (reqRow.status === 'confirmed') return res.json({ matched: true, status: 'confirmed' });
+
+    const data = await checkDuitkuStatusByRef(reqRow.duitku_ref);
+    if (!data) return res.json({ matched: false, status: reqRow.status, error: 'Gagal koneksi Duitku' });
+    if (data.statusCode === '00' && (data.paymentStatus === '00' || data.paymentStatus === '01')) {
+      const amount = reqRow.transfer_amount || reqRow.amount;
+      await db.query("UPDATE topup_requests SET status = 'confirmed', confirmed_at = NOW(), auto_confirmed = 1, matched_ref = ? WHERE id = ? AND status = 'pending'", [reqRow.duitku_ref, reqRow.id]);
+      await db.query("UPDATE tenants SET balance = balance + ? WHERE id = ?", [amount, reqRow.tenant_id]);
+      res.json({ matched: true, status: 'confirmed', amount });
+    } else {
+      res.json({ matched: false, status: reqRow.status, error: data.statusMessage || 'Pending di Duitku' });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 // POST /api/topup/tripay-callback — Tripay webhook callback (no auth required)
 router.post('/tripay-callback', async (req, res) => {
   try {
@@ -1027,6 +1049,28 @@ module.exports = router;
 module.exports.scanAndConfirmAll = scanAndConfirmAll;
 
 // ── Tripay callback handler ──────────────────────────────────────
+
+// POST /api/topup/superadmin/check-duitku — superadmin manual check
+router.post('/superadmin/check-duitku', superadminAuth, async (req, res) => {
+  try {
+    const { topup_id } = req.body;
+    const [[reqRow]] = await db.query('SELECT * FROM topup_requests WHERE id = ?', [topup_id]);
+    if (!reqRow) return res.status(404).json({ error: 'Topup not found' });
+    if (!reqRow.duitku_ref) return res.json({ matched: false, status: reqRow.status, error: 'Belum ada Duitku reference' });
+    if (reqRow.status === 'confirmed') return res.json({ matched: true, status: 'confirmed' });
+
+    const data = await checkDuitkuStatusByRef(reqRow.duitku_ref);
+    if (!data) return res.json({ matched: false, status: reqRow.status, error: 'Gagal koneksi Duitku' });
+    if (data.statusCode === '00' && (data.paymentStatus === '00' || data.paymentStatus === '01')) {
+      const amount = reqRow.transfer_amount || reqRow.amount;
+      await db.query("UPDATE topup_requests SET status = 'confirmed', confirmed_at = NOW(), auto_confirmed = 1, matched_ref = ? WHERE id = ? AND status = 'pending'", [reqRow.duitku_ref, reqRow.id]);
+      await db.query("UPDATE tenants SET balance = balance + ? WHERE id = ?", [amount, reqRow.tenant_id]);
+      res.json({ matched: true, status: 'confirmed', amount });
+    } else {
+      res.json({ matched: false, status: reqRow.status, error: data.statusMessage || 'Pending di Duitku' });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 // POST /api/topup/tripay-callback
 router.post('/tripay-callback', async (req, res) => {
   try {

@@ -276,6 +276,7 @@ async function init() {
   try { await db.query('ALTER TABLE topup_requests ADD COLUMN transfer_amount INT NOT NULL DEFAULT 0'); } catch (e) {}
   try { await db.query('ALTER TABLE topup_requests ADD COLUMN auto_confirmed BOOLEAN DEFAULT FALSE'); } catch (e) {}
   try { await db.query('ALTER TABLE topup_requests ADD COLUMN matched_ref VARCHAR(100) NULL'); } catch (e) {}
+  try { await db.query('ALTER TABLE topup_requests ADD COLUMN uuid VARCHAR(36) NULL'); } catch (e) {}
   try { await db.query('ALTER TABLE topup_requests ADD COLUMN qris_expires_at DATETIME NULL'); } catch (e) {}
   try { await db.query('ALTER TABLE topup_requests ADD INDEX idx_transfer_amount (transfer_amount, status)'); } catch (e) {}
   try { await db.query('ALTER TABLE topup_requests ADD UNIQUE KEY uk_transfer_date (transfer_amount, DATE(created_at))'); } catch (e) {}

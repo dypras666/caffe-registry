@@ -514,6 +514,17 @@ app.get('/api/superadmin/tenants/:id/env', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
+// Superadmin - List tenant topups
+app.get('/api/superadmin/tenants/:id/topups', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, amount, transfer_amount, status, duitku_ref, auto_confirmed, confirmed_at, created_at FROM topup_requests WHERE tenant_id = ? ORDER BY id DESC LIMIT 50',
+      [req.params.id]
+    );
+    res.json({ topups: rows });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
 // Superadmin - Save tenant env vars (replace all)
 app.put('/api/superadmin/tenants/:id/env', superadminAuth, async (req, res) => {
   try {
