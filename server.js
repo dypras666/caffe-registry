@@ -913,16 +913,49 @@ app.put('/api/tenant/:id/domain', tenantAuth, async (req, res) => {
   }
 });
 
-// Reset container password
-app.post('/api/tenant/:id/reset-password', tenantAuth, async (req, res) => {
+// Reset tenant admin password — update langsung di DB tenant via docker exec
+app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
   try {
-    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    const [[t]] = await db.query(
+      'SELECT id, slug, db_name, db_user, db_pass, admin_email, name FROM tenants WHERE id = ?',
+      [req.params.id]
+    );
     if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+
     const crypto = require('crypto');
-    const newPassword = crypto.randomBytes(12).toString('hex');
-    await db.query('UPDATE tenants SET container_password = ? WHERE id = ?', [newPassword, req.params.id]);
-    // TODO: actual container password update via provisioner
-    res.json({ success: true, new_password: newPassword });
+    const newPassword = crypto.randomBytes(6).toString('hex'); // 12 chars
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    const beCName = `${t.slug}-backend`;
+    const { execSync } = require('child_process');
+    const cmd = `docker exec ${beCName} mysql -h 127.0.0.1 -u ${t.db_user} -p${t.db_pass} ${t.db_name} -e "UPDATE users SET password='${hashedPassword.replace(/'/g, "'\\''")}' WHERE role='admin' LIMIT 1" 2>&1`;
+    const out = execSync(cmd, { encoding: 'utf8', timeout: 15000 });
+
+    await db.query(
+      "UPDATE tenants SET container_password = ?, updated_at = NOW() WHERE id = ?",
+      [newPassword, req.params.id]
+    );
+
+    // Send email notification
+    if (t.admin_email) {
+      const emailSvc = require('./services/email');
+      emailSvc.sendMail({
+        to: t.admin_email,
+        subject: 'Password Admin Cafe Direset',
+        template: 'login-info.html',
+        vars: {
+          name: t.name || t.slug,
+          cafeName: t.name || t.slug,
+          adminUrl: `https://office-${t.slug}.caffe.id/admin`,
+          email: t.admin_email,
+          role: 'Admin',
+          password: newPassword,
+        },
+      }).catch(e => console.warn(`[Email] Failed: ${e.message}`));
+    }
+
+    res.json({ success: true, new_password: newPassword, email: t.admin_email });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
