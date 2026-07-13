@@ -278,7 +278,7 @@ init().catch(e => { console.error(e); process.exit(1); });
       // Backend container (no volume mount — use image directly with env vars)
       const memFlag = tenant?.ram_mb ? `--memory=${tenant.ram_mb}m` : '';
       const envVars = `-e PORT=3000 -e DB_HOST=${dbCName} -e DB_PORT=3306 -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} -e JWT_SECRET=${secret} -e TENANT_SLUG=${slug} -e TENANT_NAME=${tenant?.name || slug} -e PRICING_TIER=${tenant?.pricing_tier || 'free'}`;
-      run(`docker run -d --name ${beCName} --restart unless-stopped --network ${networkName} ${memFlag} ${envVars} cafe-backend:latest`);
+      run(`docker run -d --name ${beCName} --restart unless-stopped --network ${networkName} ${memFlag} -p ${backendPort}:3000 ${envVars} cafe-backend:latest`);
 
       // UI container (expose port for tenant-router)
       run(`docker run -d --name ${slug}-ui --restart unless-stopped --network ${networkName} ${memFlag} -p ${uiPort}:80 cafe-ui:latest`);
@@ -373,7 +373,7 @@ async function repairProvisioning(tenantId) {
     const ramMb = tenant.ram_mb || 256;
     run(`docker rm -f ${beCName} 2>/dev/null || true`);
     const beEnv = `-e PORT=3000 -e DB_HOST=${dbCName} -e DB_PORT=3306 -e DB_USER=${tenant.db_user} -e DB_PASSWORD=${tenant.db_pass} -e DB_NAME=${tenant.db_name} -e JWT_SECRET=${tenant.secret} -e TENANT_SLUG=${tenant.slug} -e TENANT_NAME='${(tenant.name || tenant.slug).replace(/'/g, "'\\''")}' -e PRICING_TIER=${tenant.pricing_tier || 'free'}`;
-    run(`docker run -d --name ${beCName} --restart unless-stopped --network ${net} --memory=${ramMb}m ${beEnv} cafe-backend:latest`);
+    run(`docker run -d --name ${beCName} --restart unless-stopped --network ${net} --memory=${ramMb}m -p ${tenant.backend_port}:3000 ${beEnv} cafe-backend:latest`);
     repairs.push('backend');
   }
 
