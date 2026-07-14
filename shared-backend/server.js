@@ -190,6 +190,21 @@ app.get('/api/orders', authenticate, async (req, res) => {
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// cancel-requests HARUS sebelum /:id agar tidak di-match sebagai order ID
+app.get('/api/orders/cancel-requests', authenticate, async (req, res) => {
+  try {
+    const [r] = await req.db.query(
+      `SELECT ocr.*, o.order_number, u.name as requested_by_name
+       FROM order_cancel_requests ocr
+       LEFT JOIN orders o ON o.id = ocr.order_id
+       LEFT JOIN users u ON u.id = ocr.requested_by
+       WHERE ocr.status = 'pending' ORDER BY ocr.created_at DESC`
+    );
+    res.json(r);
+  } catch { res.json([]); }
+});
+
 app.get('/api/orders/:id', authenticate, async (req, res) => {
   try {
     const [[order]] = await req.db.query('SELECT o.*, t.number as table_number FROM orders o LEFT JOIN `tables` t ON o.table_id=t.id WHERE o.id=?', [req.params.id]);
@@ -355,6 +370,35 @@ app.get('/api/media', async (req, res) => {
 // Setup status — return object yang aman
 app.get('/api/setup/status', async (req, res) => {
   res.json({ installed: true, version: '1.0' });
+});
+
+// Rooms
+app.get('/api/rooms', authenticate, async (req, res) => {
+  try { const [r] = await req.db.query('SELECT * FROM rooms WHERE is_active=1 ORDER BY name'); res.json(r); }
+  catch { res.json([]); }
+});
+app.post('/api/rooms', authenticate, (req, res) => res.json({ success: true, id: 0 }));
+app.put('/api/rooms/:id', authenticate, (req, res) => res.json({ success: true }));
+app.delete('/api/rooms/:id', authenticate, (req, res) => res.json({ success: true }));
+
+// Orders cancel-requests actions
+app.post('/api/orders/cancel-requests/:id/approve', authenticate, async (req, res) => {
+  try {
+    await req.db.query("UPDATE order_cancel_requests SET status='approved' WHERE id=?", [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/orders/cancel-requests/:id/reject', authenticate, async (req, res) => {
+  try {
+    await req.db.query("UPDATE order_cancel_requests SET status='rejected' WHERE id=?", [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Integrations — return safe empty responses (MikroTik dll optional add-on)
+app.use('/api/integrations', (req, res) => {
+  if (req.method === 'GET') return res.json({ data: [], items: [], active: [], total: 0 });
+  res.json({ success: false, message: 'Integration not configured for this tenant' });
 });
 
 // Untuk semua route lain — proxy ke backend nusantara2024 sebagai fallback
