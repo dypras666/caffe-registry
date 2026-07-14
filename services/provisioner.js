@@ -176,21 +176,17 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
     );
   });
 
-  // Deploy static files (admin + ui) dari template
+  // Deploy static files (admin + ui) dari release tarball
   await logProvisionTimed(tenantId, slug, 'shared.static.deploy', async () => {
     const pubDir = `${TENANTS_DIR}/${slug}/backend/public`;
-    run(`mkdir -p ${pubDir}/admin ${pubDir}/ui`);
-    const adminRelease = getLatestRelease('admin');
-    if (adminRelease) {
-      run(`cd ${pubDir}/admin && tar -xzf ${adminRelease} --strip-components=1 2>/dev/null || true`);
-    } else if (require('fs').existsSync(`${TEMPLATE_DIR}/admin`)) {
-      run(`cp -r ${TEMPLATE_DIR}/admin/. ${pubDir}/admin/`);
-    }
-    const uiRelease = getLatestRelease('ui');
-    if (uiRelease) {
-      run(`cd ${pubDir}/ui && tar -xzf ${uiRelease} --strip-components=1 2>/dev/null || true`);
-    } else if (require('fs').existsSync(`${TEMPLATE_DIR}/ui`)) {
-      run(`cp -r ${TEMPLATE_DIR}/ui/. ${pubDir}/ui/`);
+
+    for (const part of ['admin', 'ui']) {
+      const destDir = `${pubDir}/${part}`;
+      run(`rm -rf ${destDir} && mkdir -p ${destDir}`);
+      const release = getLatestRelease(part);
+      if (release) {
+        run(`cd ${destDir} && tar -xzf ${release}`);
+      }
     }
   });
 
