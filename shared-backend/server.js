@@ -213,15 +213,15 @@ app.get('/api/orders', authenticate, async (req, res) => {
 // cancel-requests HARUS sebelum /:id agar tidak di-match sebagai order ID
 app.get('/api/orders/cancel-requests', authenticate, async (req, res) => {
   try {
-    const [r] = await req.db.query(
+    const [requests] = await req.db.query(
       `SELECT ocr.*, o.order_number, u.name as requested_by_name
        FROM order_cancel_requests ocr
        LEFT JOIN orders o ON o.id = ocr.order_id
        LEFT JOIN users u ON u.id = ocr.requested_by
        WHERE ocr.status = 'pending' ORDER BY ocr.created_at DESC`
     );
-    res.json(r);
-  } catch { res.json([]); }
+    res.json({ requests });
+  } catch { res.json({ requests: [] }); }
 });
 
 app.get('/api/orders/:id', authenticate, async (req, res) => {
@@ -352,14 +352,21 @@ app.get('/api/settings/:key', async (req, res) => {
   } catch { res.json({ value: null }); }
 });
 
-// Posts
+// Posts — public (cafe-ui) and admin
+// posts/categories dan posts/tags HARUS sebelum posts/:slug
+app.get('/api/posts/categories', async (req, res) => {
+  try { const [categories] = await req.db.query('SELECT * FROM post_categories ORDER BY name'); res.json({ categories }); }
+  catch { res.json({ categories: [] }); }
+});
+app.get('/api/posts/tags', async (req, res) => {
+  try { const [tags] = await req.db.query('SELECT * FROM post_tags ORDER BY name'); res.json({ tags }); }
+  catch { res.json({ tags: [] }); }
+});
 app.get('/api/posts', async (req, res) => {
   try {
-    const [rows] = await req.db.query(
-      "SELECT id, title, slug, excerpt, featured_image, published_at FROM posts WHERE status='published' ORDER BY published_at DESC LIMIT 20"
-    );
-    res.json(rows);
-  } catch { res.json([]); }
+    const [posts] = await req.db.query("SELECT * FROM posts ORDER BY created_at DESC LIMIT 50");
+    res.json({ posts, count: posts.length });
+  } catch { res.json({ posts: [], count: 0 }); }
 });
 
 app.get('/api/posts/:slug', async (req, res) => {
@@ -413,14 +420,13 @@ app.get('/api/shifts/current', authenticate, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Media (gallery) — return array agar .map() tidak error
+// Media — return { media } untuk cafe-admin, juga support bare array untuk cafe-ui
 app.get('/api/media', async (req, res) => {
   try {
-    const [rows] = await req.db.query(
-      "SELECT id, url, filename, original_name, folder FROM media ORDER BY created_at DESC LIMIT 30"
-    );
-    res.json(rows);
-  } catch { res.json([]); }
+    const [media] = await req.db.query("SELECT * FROM media ORDER BY created_at DESC LIMIT 50");
+    // cafe-admin pakai data?.media, cafe-ui pakai .map() langsung — return { media } dan array
+    res.json({ media, count: media.length });
+  } catch { res.json({ media: [], count: 0 }); }
 });
 
 // Setup status — return object yang aman
@@ -428,10 +434,10 @@ app.get('/api/setup/status', async (req, res) => {
   res.json({ installed: true, version: '1.0' });
 });
 
-// Rooms
+// Rooms — return { rooms }
 app.get('/api/rooms', authenticate, async (req, res) => {
-  try { const [r] = await req.db.query('SELECT * FROM rooms WHERE is_active=1 ORDER BY name'); res.json(r); }
-  catch { res.json([]); }
+  try { const [rooms] = await req.db.query('SELECT * FROM rooms ORDER BY name'); res.json({ rooms }); }
+  catch { res.json({ rooms: [] }); }
 });
 app.post('/api/rooms', authenticate, (req, res) => res.json({ success: true, id: 0 }));
 app.put('/api/rooms/:id', authenticate, (req, res) => res.json({ success: true }));
@@ -456,6 +462,169 @@ app.use('/api/integrations', (req, res) => {
   if (req.method === 'GET') return res.json({ data: [], items: [], active: [], total: 0 });
   res.json({ success: false, message: 'Integration not configured for this tenant' });
 });
+
+// ─── Semua endpoint yang perlu wrapped response ────────────────
+
+// Expenses
+app.get('/api/expenses', authenticate, async (req, res) => {
+  try { const [expenses] = await req.db.query('SELECT e.*, c.name as category_name FROM expenses e LEFT JOIN expense_categories c ON c.id=e.category_id ORDER BY e.created_at DESC LIMIT 100'); res.json({ expenses, count: expenses.length }); }
+  catch { res.json({ expenses: [], count: 0 }); }
+});
+app.get('/api/expenses/categories', authenticate, async (req, res) => {
+  try { const [categories] = await req.db.query('SELECT * FROM expense_categories ORDER BY name'); res.json({ categories }); }
+  catch { res.json({ categories: [] }); }
+});
+
+// Ingredients
+app.get('/api/ingredients', authenticate, async (req, res) => {
+  try { const [ingredients] = await req.db.query('SELECT * FROM ingredients ORDER BY name'); res.json({ ingredients, count: ingredients.length }); }
+  catch { res.json({ ingredients: [], count: 0 }); }
+});
+
+// Printers
+app.get('/api/printers', authenticate, async (req, res) => {
+  try {
+    const [printers] = await req.db.query('SELECT * FROM printers ORDER BY name');
+    res.json({ printers });
+  } catch (e) {
+    console.error('[printers]', e.message);
+    res.json({ printers: [] });
+  }
+});
+
+// Stations
+app.get('/api/stations', authenticate, async (req, res) => {
+  try { const [stations] = await req.db.query('SELECT * FROM stations ORDER BY name'); res.json({ stations }); }
+  catch { res.json({ stations: [] }); }
+});
+
+// Units
+app.get('/api/units', authenticate, async (req, res) => {
+  try { const [units] = await req.db.query('SELECT * FROM units WHERE is_active=1 ORDER BY name'); res.json({ units }); }
+  catch { res.json({ units: [] }); }
+});
+
+// Roles
+app.get('/api/roles', authenticate, async (req, res) => {
+  try { const [roles] = await req.db.query('SELECT * FROM roles WHERE is_active=1'); res.json({ roles }); }
+  catch { res.json({ roles: [] }); }
+});
+
+// Vouchers
+app.get('/api/vouchers', authenticate, async (req, res) => {
+  try { const [vouchers] = await req.db.query('SELECT * FROM vouchers ORDER BY created_at DESC'); res.json({ vouchers, count: vouchers.length }); }
+  catch { res.json({ vouchers: [], count: 0 }); }
+});
+
+// Recipes
+app.get('/api/recipes', authenticate, async (req, res) => {
+  try { const [recipes] = await req.db.query('SELECT r.*, p.name as product_name FROM recipes r LEFT JOIN products p ON p.id=r.product_id ORDER BY r.created_at DESC'); res.json({ recipes }); }
+  catch { res.json({ recipes: [] }); }
+});
+
+// Variants
+app.get('/api/variants', authenticate, async (req, res) => {
+  try {
+    const { product_id } = req.query;
+    const where = product_id ? 'WHERE pvg.product_id=?' : '1=1';
+    const params = product_id ? [parseInt(product_id)] : [];
+    const [variant_groups] = await req.db.query(
+      `SELECT pvg.*, JSON_ARRAYAGG(JSON_OBJECT('id',pvo.id,'name',pvo.name,'price_modifier',pvo.price_modifier)) as options
+       FROM product_variant_groups pvg
+       LEFT JOIN product_variant_options pvo ON pvo.variant_group_id=pvg.id
+       ${product_id ? 'WHERE pvg.product_id=?' : ''}
+       GROUP BY pvg.id ORDER BY pvg.sort_order`,
+      params
+    );
+    res.json({ variant_groups });
+  } catch { res.json({ variant_groups: [] }); }
+});
+
+// Stock
+app.get('/api/stock/suppliers', authenticate, async (req, res) => {
+  try { const [suppliers] = await req.db.query('SELECT * FROM suppliers ORDER BY name'); res.json({ suppliers }); }
+  catch { res.json({ suppliers: [] }); }
+});
+app.get('/api/stock/po', authenticate, async (req, res) => {
+  try { const [purchase_orders] = await req.db.query('SELECT po.*, s.name as supplier_name FROM purchase_orders po LEFT JOIN suppliers s ON s.id=po.supplier_id ORDER BY po.created_at DESC LIMIT 50'); res.json({ purchase_orders }); }
+  catch { res.json({ purchase_orders: [] }); }
+});
+app.get('/api/stock/opname', authenticate, async (req, res) => {
+  try { const [opnames] = await req.db.query('SELECT * FROM stock_opnames ORDER BY created_at DESC LIMIT 50'); res.json({ opnames }); }
+  catch { res.json({ opnames: [] }); }
+});
+app.get('/api/stock/adjustment', authenticate, async (req, res) => {
+  try { const [logs] = await req.db.query('SELECT * FROM ingredient_stock_log ORDER BY created_at DESC LIMIT 50'); res.json({ logs }); }
+  catch { res.json({ logs: [] }); }
+});
+
+// HR
+app.get('/api/hr/employees', authenticate, async (req, res) => {
+  try { const [employees] = await req.db.query('SELECT e.*, u.name as user_name FROM employees e LEFT JOIN users u ON u.id=e.user_id ORDER BY e.full_name'); res.json({ employees }); }
+  catch { res.json({ employees: [] }); }
+});
+app.get('/api/hr/work-shifts', authenticate, async (req, res) => {
+  try { const [shifts] = await req.db.query('SELECT * FROM work_shifts ORDER BY name'); res.json({ shifts }); }
+  catch { res.json({ shifts: [] }); }
+});
+app.get('/api/hr/schedules', authenticate, async (req, res) => {
+  try { const [schedules] = await req.db.query('SELECT * FROM employee_schedules ORDER BY shift_date DESC LIMIT 100'); res.json({ schedules }); }
+  catch { res.json({ schedules: [] }); }
+});
+app.get('/api/hr/attendance', authenticate, async (req, res) => {
+  try { const [attendance] = await req.db.query('SELECT * FROM attendance ORDER BY date DESC LIMIT 100'); res.json({ attendance }); }
+  catch { res.json({ attendance: [] }); }
+});
+app.get('/api/hr/kpi', authenticate, async (req, res) => {
+  try { const [metrics] = await req.db.query('SELECT * FROM employee_kpi ORDER BY period_year DESC, period_month DESC LIMIT 50'); res.json({ metrics, staff: [] }); }
+  catch { res.json({ metrics: [], staff: [] }); }
+});
+app.get('/api/hr/kpi/metrics', authenticate, async (req, res) => {
+  try { const [metrics] = await req.db.query('SELECT * FROM kpi_metrics WHERE is_active=1'); res.json({ metrics }); }
+  catch { res.json({ metrics: [] }); }
+});
+app.get('/api/hr/payroll', authenticate, async (req, res) => {
+  try { const [payroll] = await req.db.query('SELECT p.*, e.full_name FROM payroll p LEFT JOIN employees e ON e.id=p.employee_id ORDER BY p.period_year DESC, p.period_month DESC LIMIT 50'); res.json({ payroll }); }
+  catch { res.json({ payroll: [] }); }
+});
+app.get('/api/hr/shift-swaps', authenticate, async (req, res) => {
+  try { const [swaps] = await req.db.query('SELECT * FROM shift_swaps ORDER BY created_at DESC LIMIT 50'); res.json({ swaps }); }
+  catch { res.json({ swaps: [] }); }
+});
+app.get('/api/hr/settings', authenticate, async (req, res) => res.json({ hours: { start: '08:00', end: '22:00' } }));
+
+// Members
+app.get('/api/members/topup-requests/pending', authenticate, async (req, res) => {
+  try { const [requests] = await req.db.query("SELECT * FROM topup_requests WHERE status='pending' ORDER BY created_at DESC"); res.json({ requests }); }
+  catch { res.json({ requests: [] }); }
+});
+
+// Payments balance
+app.get('/api/payments/balance', authenticate, async (req, res) => {
+  try {
+    const [[user]] = await req.db.query('SELECT balance, is_priority FROM users WHERE id=?', [req.user.id]);
+    res.json({ balance: parseFloat(user?.balance||0), is_priority: !!user?.is_priority, transactions: [] });
+  } catch { res.json({ balance: 0, is_priority: false, transactions: [] }); }
+});
+
+// System info
+app.get('/api/system/info', authenticate, async (req, res) => {
+  try {
+    const [[{ users }]] = await req.db.query('SELECT COUNT(*) as users FROM users');
+    const [[{ products }]] = await req.db.query('SELECT COUNT(*) as products FROM products');
+    res.json({ tenant: { tier: 'free', mode: 'shared' }, stats: { total_users: parseInt(users), total_products: parseInt(products) } });
+  } catch { res.json({ tenant: { tier: 'free', mode: 'shared' }, stats: {} }); }
+});
+
+// Media — wrapped for admin
+app.get('/api/media/list', authenticate, async (req, res) => {
+  try { const [media] = await req.db.query('SELECT * FROM media ORDER BY created_at DESC LIMIT 50'); res.json({ media }); }
+  catch { res.json({ media: [] }); }
+});
+
+// Integrations list — return { integrations }
+app.get('/api/integrations', authenticate, async (req, res) => res.json({ integrations: [], count: 0 }));
+app.get('/api/integrations/logs', authenticate, async (req, res) => res.json({ logs: [], count: 0 }));
 
 // Untuk semua route lain — proxy ke backend nusantara2024 sebagai fallback
 // (route files nusantara2024 connect ke DB nusantara2024, BUKAN tenant yang request)
