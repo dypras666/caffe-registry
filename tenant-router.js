@@ -32,7 +32,7 @@ async function getTenantConfig(slug) {
       database: 'cafe_registry'
     });
     const [rows] = await conn.query(
-      'SELECT slug, backend_port, ui_port, admin_port FROM tenants WHERE slug = ? AND status = ?',
+      'SELECT slug, backend_port, ui_port, admin_port, container_status FROM tenants WHERE slug = ? AND status = ?',
       [slug, 'active']
     );
     await conn.end();
@@ -124,22 +124,30 @@ app.use(async (req, res, next) => {
   next();
 });
 
+const SHARED_BACKEND_PORT = parseInt(process.env.SHARED_BACKEND_PORT || '3900');
+
 app.use('/', (req, res) => {
   const slug = req.tenantSlug;
   const config = req.tenantConfig;
+  const isShared = config.container_status === 'shared' || !config.backend_port;
 
-  // API always proxies to backend container
+  // API requests
   if (req.originalUrl.startsWith('/api')) {
+    if (isShared) {
+      // Inject slug header agar shared-backend tahu tenant mana
+      req.headers['x-tenant-slug'] = slug;
+      return proxyRequest(req, res, SHARED_BACKEND_PORT);
+    }
     return proxyRequest(req, res, config.backend_port);
   }
 
-  // Docker path: proxy to UI or admin container
-  if (config.ui_port || config.admin_port) {
+  // Static/UI requests
+  if (!isShared && (config.ui_port || config.admin_port)) {
     const targetPort = req.tenantType === 'admin' ? config.admin_port : config.ui_port;
     return proxyRequest(req, res, targetPort);
   }
 
-  // Legacy static fallback
+  // Shared & legacy: serve static files dari disk
   serveStaticFallback(req, res, slug);
 });
 

@@ -8,7 +8,8 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const db = require('./config/database');
 const jwt = require('jsonwebtoken');
-const { provisionTenant, checkAvailability, restartTenant } = require('./services/provisioner');
+const multer = require('multer');
+const { provisionTenant, upgradeFromFree, checkAvailability, restartTenant } = require('./services/provisioner');
 const nodemailer = require('nodemailer');
 const { superadminAuth } = require('./services/auth');
 // Queue must be required early so all routes can use it
@@ -29,7 +30,7 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://static.cloudflareinsights.com'],
       scriptSrcAttr: ["'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com', 'https://fonts.googleapis.com'],
       imgSrc: [
         "'self'",
         'data:',
@@ -93,6 +94,134 @@ app.put('/api/pricing/:tier', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Guides API ────────────────────────────────────────────────
+
+// GET /api/guides — public, published only
+app.get('/api/guides', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT id, title, slug, description, icon, duration_min, category, video_url, image_url, sort_order FROM guides WHERE status=? ORDER BY sort_order ASC', ['published']);
+    res.json({ guides: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/guides/:slug — public single guide
+app.get('/api/guides/:slug', async (req, res) => {
+  try {
+    const [[guide]] = await db.query('SELECT * FROM guides WHERE slug=? AND status=?', [req.params.slug, 'published']);
+    if (!guide) return res.status(404).json({ error: 'Guide not found' });
+    res.json({ guide });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/admin/guides — superadmin all guides
+app.get('/api/admin/guides', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM guides ORDER BY sort_order ASC');
+    res.json({ guides: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/admin/guides — create
+app.post('/api/admin/guides', superadminAuth, async (req, res) => {
+  try {
+    const { title, slug, description, icon, duration_min, content, category, video_url, image_url, sort_order, status } = req.body;
+    const [result] = await db.query(
+      'INSERT INTO guides (title, slug, description, icon, duration_min, content, category, video_url, image_url, sort_order, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [title, slug, description, icon||'book', duration_min||5, content||'', category||'umum', video_url||null, image_url||null, sort_order||0, status||'published']
+    );
+    const [[guide]] = await db.query('SELECT * FROM guides WHERE id=?', [result.insertId]);
+    res.json({ guide });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/admin/guides/:id — update
+app.put('/api/admin/guides/:id', superadminAuth, async (req, res) => {
+  try {
+    const allowed = ['title','slug','description','icon','duration_min','content','category','video_url','image_url','sort_order','status'];
+    const updates = [], values = [];
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) { updates.push(`${k}=?`); values.push(req.body[k]); }
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No fields' });
+    values.push(req.params.id);
+    await db.query(`UPDATE guides SET ${updates.join(',')} WHERE id=?`, values);
+    const [[guide]] = await db.query('SELECT * FROM guides WHERE id=?', [req.params.id]);
+    res.json({ guide });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/admin/guides/:id — delete
+app.delete('/api/admin/guides/:id', superadminAuth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM guides WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── News API ──────────────────────────────────────────────────
+
+// GET /api/news — public published
+app.get('/api/news', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT id, title, slug, excerpt, image_url, author, published_at FROM news WHERE status=? ORDER BY published_at DESC', ['published']);
+    res.json({ news: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/news/:slug — public single
+app.get('/api/news/:slug', async (req, res) => {
+  try {
+    const [[article]] = await db.query('SELECT * FROM news WHERE slug=? AND status=?', [req.params.slug, 'published']);
+    if (!article) return res.status(404).json({ error: 'Article not found' });
+    res.json({ article });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/admin/news — superadmin all
+app.get('/api/admin/news', superadminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM news ORDER BY published_at DESC');
+    res.json({ news: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/admin/news — create
+app.post('/api/admin/news', superadminAuth, async (req, res) => {
+  try {
+    const { title, slug, excerpt, content, image_url, author, status, published_at } = req.body;
+    const [result] = await db.query(
+      'INSERT INTO news (title, slug, excerpt, content, image_url, author, status, published_at) VALUES (?,?,?,?,?,?,?,?)',
+      [title, slug, excerpt||'', content||'', image_url||null, author||'Caffe.id', status||'draft', published_at||new Date()]
+    );
+    const [[article]] = await db.query('SELECT * FROM news WHERE id=?', [result.insertId]);
+    res.json({ article });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/admin/news/:id — update
+app.put('/api/admin/news/:id', superadminAuth, async (req, res) => {
+  try {
+    const allowed = ['title','slug','excerpt','content','image_url','author','status','published_at'];
+    const updates = [], values = [];
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) { updates.push(`${k}=?`); values.push(req.body[k]); }
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No fields' });
+    values.push(req.params.id);
+    await db.query(`UPDATE news SET ${updates.join(',')} WHERE id=?`, values);
+    const [[article]] = await db.query('SELECT * FROM news WHERE id=?', [req.params.id]);
+    res.json({ article });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/admin/news/:id — delete
+app.delete('/api/admin/news/:id', superadminAuth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM news WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Upgrade tenant tier
 app.post('/api/tenant/:id/upgrade', async (req, res) => {
   try {
@@ -110,11 +239,21 @@ app.post('/api/tenant/:id/upgrade', async (req, res) => {
       return res.status(404).json({ error: 'Tenant tidak ditemukan' });
     }
 
+    const wasShared = tenants[0].container_status === 'shared';
+
     // Update tenant tier
     await db.query(
       'UPDATE tenants SET pricing_tier = ?, ram_mb = ?, cpu_cores = ?, disk_mb = ? WHERE id = ?',
       [tier, plan.ram_mb, plan.cpu_cores, plan.disk_mb, req.params.id]
     );
+
+    // Kalau sebelumnya FREE shared → spawn isolated container di background
+    if (wasShared && tier !== 'free') {
+      upgradeFromFree(parseInt(req.params.id)).catch(e =>
+        console.error(`[upgrade] Failed for tenant ${req.params.id}:`, e.message)
+      );
+      return res.json({ success: true, message: `Upgrade ke ${plan.name} sedang diproses. Instance akan aktif dalam beberapa menit.` });
+    }
 
     res.json({ success: true, message: `Berhasil upgrade ke ${plan.name}` });
   } catch (error) {
@@ -744,6 +883,7 @@ const queueRouter = require('./routes/queue');
 const backupRouter = require('./routes/backup');
 const addonsRouter = require('./routes/addons');
 const containersRouter = require('./routes/containers');
+const templatesRouter = require('./routes/templates');
 const { startAutoScaler } = require('./services/autoscaler');
 const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/email');
 
@@ -760,6 +900,7 @@ app.use('/api/queue', queueRouter);
 app.use('/api/backup', backupRouter);
 app.use('/api/addons', addonsRouter);
 app.use('/api/tenants', containersRouter);
+app.use('/api/templates', templatesRouter);
 
 // ─── ACTIVITY LOG ──────────────────────────────────────────────
 // Ensures activity_logs table exists
@@ -831,27 +972,39 @@ app.get('/api/check/:slug', async (req, res) => {
 // Register new tenant
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
-    const { name, slug, email, password, phone } = req.body;
-    
+    const { name, slug, email, password, phone, template_id } = req.body;
+
     // Validation
     if (!name || !slug || !email || !password) {
       return res.status(400).json({ error: 'Semua field wajib diisi' });
     }
-    
+
     if (!/^[a-z0-9-]+$/.test(slug)) {
       return res.status(400).json({ error: 'Slug hanya huruf kecil, angka, dan strip' });
     }
-    
+
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password minimal 8 karakter' });
     }
-    
+
     // Check availability
     const avail = await checkAvailability(slug);
     if (!avail.available) {
       return res.status(400).json({ error: avail.error || 'Slug sudah digunakan' });
     }
-    
+
+    // Resolve template — must be free tier (paid templates require purchase after registration)
+    let resolvedTemplateId = null;
+    if (template_id) {
+      const [[tpl]] = await db.query(
+        "SELECT id, price FROM ui_templates WHERE id = ? AND is_active = 1",
+        [parseInt(template_id)]
+      );
+      if (!tpl) return res.status(400).json({ error: 'Template tidak ditemukan' });
+      if (tpl.price > 0) return res.status(400).json({ error: 'Template berbayar tidak bisa dipilih saat registrasi. Beli setelah mendaftar.' });
+      resolvedTemplateId = tpl.id;
+    }
+
     // Get free tier defaults
     const [plans] = await db.query("SELECT * FROM pricing_plans WHERE tier = 'free'");
     const freePlan = plans[0];
@@ -859,12 +1012,20 @@ app.post('/api/register', authLimiter, async (req, res) => {
     // Create tenant record
     const bcrypt = require('bcryptjs');
     const hashedPassword = await bcrypt.hash(password, 10);
-    
+
     const tenantId = await db.query(
-      'INSERT INTO tenants (name, slug, email, phone, status, pricing_tier, ram_mb, cpu_cores, disk_mb, admin_email, admin_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, slug, email, phone || null, 'provisioning', 'free', freePlan.ram_mb, freePlan.cpu_cores, freePlan.disk_mb, email, hashedPassword]
+      'INSERT INTO tenants (name, slug, email, phone, status, pricing_tier, ram_mb, cpu_cores, disk_mb, admin_email, admin_password, active_template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, slug, email, phone || null, 'provisioning', 'free', freePlan.ram_mb, freePlan.cpu_cores, freePlan.disk_mb, email, hashedPassword, resolvedTemplateId]
     ).then(r => r[0].insertId);
-    
+
+    // Record template ownership if a free template was chosen
+    if (resolvedTemplateId) {
+      await db.query(
+        'INSERT IGNORE INTO tenant_templates (tenant_id, template_id) VALUES (?, ?)',
+        [tenantId, resolvedTemplateId]
+      ).catch(() => {});
+    }
+
     // Trigger provisioning asynchronously
     provisionTenant(tenantId, slug, email, password).catch(console.error);
 
@@ -1205,6 +1366,32 @@ app.post('/api/media/upload-qris', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 
+// Multipart file upload — supports multiple files
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per file
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg','image/png','image/webp','image/gif','video/mp4','video/webm','application/pdf'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Tipe file tidak didukung: ' + file.mimetype));
+  },
+});
+
+app.post('/api/media/upload-multiple', superadminAuth, upload.array('files', 10), async (req, res) => {
+  try {
+    const files = req.files;
+    if (!files || !files.length) return res.status(400).json({ error: 'Tidak ada file' });
+    const namespace = req.body.namespace || 'uploads';
+    const results = await Promise.all(files.map(async (f) => {
+      const ext = path.extname(f.originalname) || '.jpg';
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2,8)}${ext}`;
+      const result = await storageUpload(namespace, filename, f.buffer, f.mimetype);
+      return { url: result.url, key: result.key, originalName: f.originalname, size: f.size };
+    }));
+    res.json({ files: results });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
 // ─── Payment Gateway Tests ───────────────────────────────────
 async function getSettings(prefix) {
   const [rows] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE ?", [prefix + '%']);
@@ -1471,6 +1658,18 @@ function safeError(err) {
 app.use(express.static(__dirname + '/public'));
 // Serve uploaded files (STORAGE_DRIVER=local)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Preview SPA fallback — each template preview is its own SPA
+app.use('/previews/:template', (req, res, next) => {
+  const templateSlug = req.params.template;
+  const previewIndex = path.join(__dirname, 'public', 'previews', templateSlug, 'index.html');
+  const fs = require('fs');
+  if (fs.existsSync(previewIndex)) {
+    res.sendFile(previewIndex);
+  } else {
+    next();
+  }
+});
 
 // SPA catch-all — serve index.html for all non-API routes
 app.use((req, res, next) => {

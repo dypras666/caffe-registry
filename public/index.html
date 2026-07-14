@@ -1,55 +1,107 @@
 <!doctype html>
-<html lang="en">
+<html lang="id">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Caffe.id — Platform SaaS Manajemen Kafe Modern</title>
-    <meta name="description" content="Deploy sistem POS kafe, manajemen menu, kasir, laporan, dan reservasi dalam hitungan menit. Multi-cabang, berbasis cloud, harga terjangkau mulai gratis." />
-    <meta name="keywords" content="software kasir kafe, pos kafe, sistem manajemen kafe, aplikasi cafe, point of sale indonesia, saas kafe, software restoran" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Caffe.id — Platform Manajemen Kafe & Resto Cloud-Based</title>
+    <meta name="description" content="Caffe.id solusi manajemen kafe modern berbasis cloud. POS kasir, manajemen menu, QR self-order, laporan penjualan, multi-cabang. Mulai gratis sekarang!" />
+    <meta name="keywords" content="manajemen kafe, POS kasir, software kafe, aplikasi restoran, QR order, cloud POS, caffe.id, sistem kasir online" />
     <meta name="robots" content="index, follow" />
-    <link rel="canonical" href="https://app.caffe.my.id/" />
+    <meta name="author" content="Caffe.id" />
+    <meta name="language" content="id" />
+
+    <!-- Canonical -->
+    <link rel="canonical" href="https://caffe.my.id/" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Caffe.id — Platform SaaS Manajemen Kafe Modern" />
-    <meta property="og:description" content="Deploy sistem POS kafe dalam hitungan menit. Kasir, menu, laporan, reservasi — semua dalam satu platform." />
-    <meta property="og:url" content="https://app.caffe.my.id/" />
-    <meta property="og:site_name" content="Caffe.id" />
+    <meta property="og:title" content="Caffe.id — Platform Manajemen Kafe & Resto Cloud-Based" />
+    <meta property="og:description" content="Solusi manajemen kafe modern berbasis cloud. POS kasir, manajemen menu, QR self-order, laporan penjualan, multi-cabang." />
+    <meta property="og:url" content="https://caffe.my.id/" />
+    <meta property="og:image" content="https://caffe.my.id/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:locale" content="id_ID" />
+    <meta property="og:site_name" content="Caffe.id" />
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Caffe.id — Platform SaaS Manajemen Kafe" />
-    <meta name="twitter:description" content="Deploy POS kafe Anda dalam hitungan menit. Multi-cabang, cloud-based, harga mulai gratis." />
+    <meta name="twitter:title" content="Caffe.id — Platform Manajemen Kafe & Resto Cloud-Based" />
+    <meta name="twitter:description" content="Solusi manajemen kafe modern berbasis cloud. POS kasir, manajemen menu, QR self-order, laporan penjualan, multi-cabang." />
+    <meta name="twitter:image" content="https://caffe.my.id/og-image.jpg" />
 
-    <!-- Structured Data: SaaS Product -->
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Caffe.id",
+      "url": "https://caffe.my.id",
+      "logo": "https://caffe.my.id/logo.png",
+      "description": "Platform manajemen kafe dan restoran berbasis cloud dengan fitur POS, QR self-order, dan multi-cabang.",
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "telephone": "+62-",
+        "contactType": "customer service",
+        "availableLanguage": ["Indonesian"]
+      },
+      "sameAs": [
+        "https://instagram.com/caffe.id",
+        "https://facebook.com/caffe.id"
+      ]
+    }
+    </script>
+
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
       "name": "Caffe.id",
-      "applicationCategory": "BusinessApplication",
       "operatingSystem": "Web",
-      "description": "Platform manajemen kafe berbasis cloud dengan fitur POS, kasir, manajemen menu, laporan, dan reservasi.",
-      "url": "https://app.caffe.my.id",
-      "offers": [
-        { "@type": "Offer", "name": "Gratis", "price": "0", "priceCurrency": "IDR" },
-        { "@type": "Offer", "name": "Starter", "price": "30000", "priceCurrency": "IDR" },
-        { "@type": "Offer", "name": "Business", "price": "75000", "priceCurrency": "IDR" },
-        { "@type": "Offer", "name": "Enterprise", "price": "150000", "priceCurrency": "IDR" }
-      ],
-      "featureList": ["POS Kasir", "Manajemen Menu", "Laporan Penjualan", "Manajemen Meja", "Multi-cabang", "Reservasi Online"]
+      "applicationCategory": "BusinessApplication",
+      "offers": {
+        "@type": "AggregateOffer",
+        "offerCount": "4",
+        "lowPrice": "0",
+        "highPrice": "500000",
+        "priceCurrency": "IDR"
+      },
+      "description": "Platform SaaS manajemen kafe dan restoran. Fitur POS kasir, manajemen menu, QR self-order, laporan keuangan, multi-cabang.",
+      "featureList": [
+        "POS Kasir",
+        "Manajemen Menu & Kategori",
+        "QR Self-Order",
+        "Laporan Penjualan Harian",
+        "Multi-cabang & Multi-tenant",
+        "Manajemen Meja",
+        "Reservasi Online",
+        "Integrasi Pembayaran"
+      ]
+    }
+    </script>
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Caffe.id",
+      "url": "https://caffe.my.id",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://caffe.my.id/?s={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
     }
     </script>
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <script type="module" crossorigin src="/assets/index-5wlF2MFa.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CiIBDjq6.css">
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <script type="module" crossorigin src="/assets/index-Cprfwfbj.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CS5tXOx5.css">
   </head>
   <body>
     <div id="root"></div>
   </body>
 </html>
-

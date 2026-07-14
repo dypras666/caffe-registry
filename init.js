@@ -343,6 +343,59 @@ async function init() {
   try { await db.query('ALTER TABLE tenants ADD COLUMN auto_suspend BOOLEAN DEFAULT TRUE'); } catch (e) {}
   try { await db.query('ALTER TABLE tenants ADD COLUMN suspended_at TIMESTAMP NULL'); } catch (e) {}
 
+  // UI templates marketplace
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ui_templates (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      slug VARCHAR(100) UNIQUE NOT NULL,
+      name VARCHAR(200) NOT NULL,
+      description TEXT,
+      tier ENUM('free','premium','exclusive') DEFAULT 'free',
+      price INT DEFAULT 0,
+      image_tag VARCHAR(200) DEFAULT 'cafe-ui:latest',
+      thumbnail_url VARCHAR(500),
+      preview_url VARCHAR(500),
+      preview_hue VARCHAR(10) DEFAULT '30',
+      tags VARCHAR(300),
+      rating DECIMAL(3,1) DEFAULT 0.0,
+      review_count INT DEFAULT 0,
+      is_active BOOLEAN DEFAULT TRUE,
+      sort_order INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_tier (tier),
+      INDEX idx_active (is_active)
+    ) ENGINE=InnoDB
+  `);
+  try { await db.query("ALTER TABLE ui_templates ADD COLUMN image_tag VARCHAR(200) DEFAULT 'cafe-ui:latest' AFTER price"); } catch (e) {}
+
+  // Tenant template purchases
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS tenant_templates (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tenant_id INT NOT NULL,
+      template_id INT NOT NULL,
+      is_active BOOLEAN DEFAULT FALSE,
+      purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_tenant_template (tenant_id, template_id),
+      INDEX idx_tenant (tenant_id),
+      FOREIGN KEY (template_id) REFERENCES ui_templates(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB
+  `);
+
+  // Seed default templates
+  await db.query(`
+    INSERT IGNORE INTO ui_templates (slug, name, description, tier, price, image_tag, preview_url, preview_hue, tags, rating, review_count, sort_order) VALUES
+    ('classic-landing', 'Classic Landing', 'Landing page klasik dengan hero animasi kopi dan menu showcase.', 'free', 0, 'cafe-ui:latest', NULL, '30', 'minimal,classic,dark', 4.5, 128, 1),
+    ('premium-coffee', 'Premium Coffee', 'Modern single-page dengan animasi cangkir kopi 3D, warm palette, typografi minimalis premium.', 'premium', 75000, 'cafe-ui:v2', NULL, '25', '3d,premium,modern,warm', 4.9, 47, 2),
+    ('urban-brew', 'Urban Brew', 'Dark & bold aesthetic untuk coffee shop bergaya industrial-urban.', 'premium', 65000, 'cafe-ui:v3', NULL, '200', 'dark,urban,bold,industrial', 4.7, 31, 3),
+    ('botanical-cafe', 'Botanical Café', 'Light & airy design dengan aksen hijau, cocok untuk café berkonsep nature.', 'exclusive', 120000, 'cafe-ui:v4', NULL, '120', 'light,botanical,nature,green', 5.0, 19, 4)
+  `);
+
+  // Add active_template_id column to tenants if missing
+  try { await db.query('ALTER TABLE tenants ADD COLUMN active_template_id INT NULL'); } catch (e) {}
+  try { await db.query('ALTER TABLE tenants ADD CONSTRAINT fk_active_template FOREIGN KEY (active_template_id) REFERENCES ui_templates(id) ON DELETE SET NULL'); } catch (e) {}
+
   // Seed app_domain setting so frontend can read it
   const appDomain = process.env.APP_DOMAIN || 'caffe.id';
   const siteUrl   = process.env.SITE_URL || `https://${appDomain}`;

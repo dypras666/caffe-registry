@@ -75,6 +75,137 @@ function dockerNetwork(slug) { return `tenant-${slug}`; }
 function dockerDbContainer(slug) { return `${slug}-db`; }
 function dockerBackendContainer(slug) { return `${slug}-backend`; }
 
+// ─── Shared (FREE) provisioning ─────────────────────────
+// Buat DB + user MySQL di shared container. Tidak deploy container baru.
+async function provisionFreeTenant(tenantId, slug, tenant) {
+  console.log(`[${slug}] FREE tier → shared provisioning`);
+  const startAll = Date.now();
+
+  await db.query("UPDATE tenants SET container_status='provisioning' WHERE id=?", [tenantId]);
+
+  const dbName = `cafe_${slug.replace(/-/g, '_')}`;
+  const dbUser = `cafe_${slug.replace(/-/g, '_').substring(0, 12)}`;
+  const dbPass = crypto.randomBytes(16).toString('hex');
+  const secret = crypto.randomBytes(32).toString('hex');
+
+  await db.query(
+    'UPDATE tenants SET backend_port=NULL, ui_port=NULL, admin_port=NULL, db_name=?, db_user=?, db_pass=?, secret=? WHERE id=?',
+    [dbName, dbUser, dbPass, secret, tenantId]
+  );
+
+  // Buat DB + user di shared MySQL (host:port dari env)
+  const sharedDbHost = process.env.SHARED_DB_HOST || '127.0.0.1';
+  const sharedDbPort = parseInt(process.env.SHARED_DB_PORT || '3910');
+  const sharedDbRoot = process.env.SHARED_DB_ROOT_PASS || process.env.DB_PASSWORD || '';
+
+  await logProvisionTimed(tenantId, slug, 'shared.db.create', async () => {
+    const conn = await require('mysql2/promise').createConnection({
+      host: sharedDbHost, port: sharedDbPort,
+      user: 'root', password: sharedDbRoot,
+    });
+    await conn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    await conn.query(`CREATE USER IF NOT EXISTS '${dbUser}'@'%' IDENTIFIED BY '${dbPass}'`);
+    await conn.query(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${dbUser}'@'%'`);
+    await conn.query('FLUSH PRIVILEGES');
+    await conn.end();
+  });
+
+  // Inisialisasi schema DB — jalankan migrate.js dari tenant aktif sebagai referensi
+  await logProvisionTimed(tenantId, slug, 'shared.db.init', async () => {
+    const backendDir = `${TENANTS_DIR}/${slug}/backend`;
+    run(`mkdir -p ${backendDir}/database`);
+
+    // Cari tenant aktif yang bisa dipakai sebagai sumber migrate.js
+    const refTenant = require('fs').existsSync(`${TENANTS_DIR}/nusantara2024/backend/database/migrate.js`)
+      ? 'nusantara2024'
+      : null;
+    if (!refTenant) throw new Error('Tidak ada tenant referensi untuk migrate.js');
+
+    const refBackend = `${TENANTS_DIR}/${refTenant}/backend`;
+    const migrateScript = `${backendDir}/database/migrate.js`;
+
+    if (!require('fs').existsSync(migrateScript)) {
+      run(`cp ${refBackend}/database/migrate.js ${migrateScript}`);
+    }
+
+    // Symlink node_modules + config dari tenant referensi agar migrate.js bisa resolve deps
+    if (!require('fs').existsSync(`${backendDir}/node_modules`)) {
+      run(`ln -sf ${refBackend}/node_modules ${backendDir}/node_modules`);
+    }
+    if (!require('fs').existsSync(`${backendDir}/config`)) {
+      run(`cp -r ${refBackend}/config ${backendDir}/config`);
+    }
+
+    // Import base schema (65 tabel) dengan FK checks disabled
+    const baseSchema = `${TEMPLATE_DIR}/base-schema.sql`;
+    if (require('fs').existsSync(baseSchema)) {
+      const conn = await require('mysql2/promise').createConnection({
+        host: sharedDbHost, port: sharedDbPort,
+        user: 'root', password: sharedDbRoot,
+        database: dbName, multipleStatements: true,
+      });
+      const sql = require('fs').readFileSync(baseSchema, 'utf8');
+      await conn.query(sql);
+      await conn.end();
+    }
+
+    // Buat admin user default
+    const bcrypt = require('bcryptjs');
+    const adminHash = await bcrypt.hash('admin123', 10);
+    const tenantConn = await require('mysql2/promise').createConnection({
+      host: sharedDbHost, port: sharedDbPort,
+      user: dbUser, password: dbPass, database: dbName,
+    });
+    await tenantConn.query(
+      `INSERT IGNORE INTO users (name, email, password, role, status) VALUES (?,?,?,?,?)`,
+      ['Admin', `admin@${slug}.id`, adminHash, 'admin', 'active']
+    );
+    await tenantConn.query(
+      `INSERT IGNORE INTO branches (name, code, is_main, is_active) VALUES (?,?,?,?)`,
+      [slug, 'MAIN', 1, 1]
+    );
+    await tenantConn.end();
+
+    // Jalankan migrate.js dari refBackend langsung (sudah terbukti bekerja)
+    // Arahkan CWD ke refBackend agar require('../config/database') resolve dengan benar
+    run(
+      `cd ${refBackend} && ` +
+      `DB_HOST=${sharedDbHost} DB_PORT=${sharedDbPort} DB_USER=${dbUser} ` +
+      `DB_PASSWORD=${dbPass} DB_NAME=${dbName} DB_SOCKET="" ` +
+      `node database/migrate.js 2>&1`
+    );
+  });
+
+  // Deploy static files (admin + ui) dari template
+  await logProvisionTimed(tenantId, slug, 'shared.static.deploy', async () => {
+    const pubDir = `${TENANTS_DIR}/${slug}/backend/public`;
+    run(`mkdir -p ${pubDir}/admin ${pubDir}/ui`);
+    const adminRelease = getLatestRelease('admin');
+    if (adminRelease) {
+      run(`cd ${pubDir}/admin && tar -xzf ${adminRelease} --strip-components=1 2>/dev/null || true`);
+    } else if (require('fs').existsSync(`${TEMPLATE_DIR}/admin`)) {
+      run(`cp -r ${TEMPLATE_DIR}/admin/. ${pubDir}/admin/`);
+    }
+    const uiRelease = getLatestRelease('ui');
+    if (uiRelease) {
+      run(`cd ${pubDir}/ui && tar -xzf ${uiRelease} --strip-components=1 2>/dev/null || true`);
+    } else if (require('fs').existsSync(`${TEMPLATE_DIR}/ui`)) {
+      run(`cp -r ${TEMPLATE_DIR}/ui/. ${pubDir}/ui/`);
+    }
+  });
+
+  const domain = process.env.APP_DOMAIN || 'caffe.id';
+  const adminUrl = `https://office-${slug}.${domain}/admin`;
+  await db.query(
+    "UPDATE tenants SET status='active', container_status='shared', admin_url=? WHERE id=?",
+    [adminUrl, tenantId]
+  );
+
+  await logProvision(tenantId, slug, 'provision.complete', 'success',
+    `FREE shared complete in ${Date.now() - startAll}ms`);
+  console.log(`[${slug}] FREE provisioning done (${Date.now() - startAll}ms)`);
+}
+
 // ─── Provisioning ───────────────────────────────────────
 async function provisionTenant(tenantId, slug, email, password) {
   console.log(`[${slug}] Provisioning start...`);
@@ -84,6 +215,11 @@ async function provisionTenant(tenantId, slug, email, password) {
     const [rows] = await db.query('SELECT * FROM tenants WHERE id = ?', [tenantId]);
     if (rows.length === 0) throw new Error('Tenant not found');
     const tenant = rows[0];
+
+    // FREE tier → shared provisioning (DB only, no containers)
+    if ((tenant.pricing_tier || 'free') === 'free') {
+      return provisionFreeTenant(tenantId, slug, tenant);
+    }
 
     // Mark provisioning
     await db.query("UPDATE tenants SET container_status='provisioning' WHERE id=?", [tenantId]);
@@ -269,9 +405,16 @@ init().catch(e => { console.error(e); process.exit(1); });
 
     // ═══ 10. Start containers (backend, ui, admin) ═══
     await logProvisionTimed(tenantId, slug, 'docker.containers.start', async () => {
+      // Resolve UI image from active template, fallback to cafe-ui:latest
+      let uiImage = 'cafe-ui:latest';
+      if (tenant.active_template_id) {
+        const [[tpl]] = await db.query('SELECT image_tag FROM ui_templates WHERE id = ?', [tenant.active_template_id]);
+        if (tpl?.image_tag) uiImage = tpl.image_tag;
+      }
+
       // Pull images
       run(`docker pull cafe-backend:latest 2>/dev/null || true`);
-      run(`docker pull cafe-ui:latest 2>/dev/null || true`);
+      run(`docker pull ${uiImage} 2>/dev/null || true`);
       run(`docker pull cafe-admin:latest 2>/dev/null || true`);
 
       // Remove old containers
@@ -283,7 +426,7 @@ init().catch(e => { console.error(e); process.exit(1); });
       run(`docker run -d --name ${beCName} --restart unless-stopped --network ${networkName} ${memFlag} -p ${backendPort}:3000 ${envVars} cafe-backend:latest`);
 
       // UI container (expose port for tenant-router)
-      run(`docker run -d --name ${slug}-ui --restart unless-stopped --network ${networkName} ${memFlag} -p ${uiPort}:80 cafe-ui:latest`);
+      run(`docker run -d --name ${slug}-ui --restart unless-stopped --network ${networkName} ${memFlag} -p ${uiPort}:80 ${uiImage}`);
 
       // Admin container
       run(`docker run -d --name ${slug}-admin --restart unless-stopped --network ${networkName} ${memFlag} -p ${adminPort}:80 cafe-admin:latest`);
@@ -387,8 +530,15 @@ async function repairProvisioning(tenantId) {
   // UI
   const uiRunning = run(`docker inspect -f {{.State.Running}} ${tenant.slug}-ui 2>/dev/null || echo notfound`).trim();
   if (uiRunning !== 'true') {
+    let repairUiImage = 'cafe-ui:latest';
+    if (tenant.active_template_id) {
+      try {
+        const [[tpl]] = await db.query('SELECT image_tag FROM ui_templates WHERE id = ?', [tenant.active_template_id]);
+        if (tpl?.image_tag) repairUiImage = tpl.image_tag;
+      } catch (_) {}
+    }
     run(`docker rm -f ${tenant.slug}-ui 2>/dev/null || true`);
-    run(`docker run -d --name ${tenant.slug}-ui --restart unless-stopped --network ${net} --memory=${ramMb}m -p ${tenant.ui_port}:80 cafe-ui:latest`);
+    run(`docker run -d --name ${tenant.slug}-ui --restart unless-stopped --network ${net} --memory=${ramMb}m -p ${tenant.ui_port}:80 ${repairUiImage}`);
     repairs.push('ui');
   }
 
@@ -533,8 +683,73 @@ async function migrateTenant(tenantId, targetServerId) {
   // ... migration logic unchanged
 }
 
+// ─── Upgrade FREE → paid (isolated) ─────────────────────
+// Dipanggil saat tenant upgrade tier. Migrasikan DB dari shared ke isolated container.
+async function upgradeFromFree(tenantId) {
+  const [[tenant]] = await db.query('SELECT * FROM tenants WHERE id = ?', [tenantId]);
+  if (!tenant) throw new Error('Tenant not found');
+  if (tenant.container_status !== 'shared') throw new Error('Tenant is not on shared tier');
+
+  console.log(`[${tenant.slug}] Upgrading from FREE shared → isolated`);
+
+  // Dump DB dari shared MySQL
+  const sharedHost = process.env.SHARED_DB_HOST || '127.0.0.1';
+  const sharedPort = process.env.SHARED_DB_PORT || '3910';
+  const rootPass = process.env.SHARED_DB_ROOT_PASS || '';
+  const dumpFile = `/tmp/${tenant.slug}-upgrade-dump.sql`;
+
+  run(`MYSQL_PWD="${rootPass}" mysqldump -h ${sharedHost} -P ${sharedPort} -u root ${tenant.db_name} > ${dumpFile}`);
+
+  // Provision isolated container (akan buat DB baru, override db_user/pass)
+  // Set tier ke nilai baru dulu agar provisionTenant tidak re-route ke free
+  await provisionTenant(tenantId, tenant.slug, tenant.admin_email, null);
+
+  // Import dump ke isolated DB
+  const [[updated]] = await db.query('SELECT * FROM tenants WHERE id = ?', [tenantId]);
+  run(`MYSQL_PWD="${updated.db_pass}" mysql -h 127.0.0.1 -P 3306 -u ${updated.db_user} ${updated.db_name} < ${dumpFile}`);
+  run(`rm -f ${dumpFile}`);
+
+  // Drop DB dari shared MySQL (cleanup)
+  run(`MYSQL_PWD="${rootPass}" mysql -h ${sharedHost} -P ${sharedPort} -u root -e "DROP DATABASE IF EXISTS \`${tenant.db_name}\`; DROP USER IF EXISTS '${tenant.db_user}'@'%';" 2>/dev/null || true`);
+
+  // Invalidate shared-backend pool cache via HTTP
+  try {
+    const http = require('http');
+    const sharedPort2 = process.env.SHARED_BACKEND_PORT || '3900';
+    http.get(`http://localhost:${sharedPort2}/_internal/invalidate/${tenant.slug}`).on('error', () => {});
+  } catch {}
+
+  console.log(`[${tenant.slug}] Upgrade complete — now isolated`);
+}
+
+// ─── Swap UI template container ───────────────────────────────
+// Stops the current cafe-ui container for a tenant and starts a new one
+// with the specified Docker image tag (e.g. "cafe-ui:v2").
+async function swapUiTemplate(slug, imageTag) {
+  const [[tenant]] = await db.query('SELECT * FROM tenants WHERE slug = ?', [slug]);
+  if (!tenant) throw new Error('Tenant not found');
+  if (!tenant.ui_port) throw new Error('Tenant has no UI port assigned');
+
+  const containerName = `${slug}-ui`;
+  const memFlag = tenant.ram_mb ? `--memory=${tenant.ram_mb}m` : '';
+  const networkName = `cafe-net-${slug}`;
+
+  // Pull the new image first (non-fatal if registry unreachable)
+  try { run(`docker pull ${imageTag} 2>/dev/null || true`); } catch (_) {}
+
+  // Stop and remove current UI container
+  run(`docker rm -f ${containerName} 2>/dev/null || true`);
+
+  // Start new container with requested image
+  run(`docker run -d --name ${containerName} --restart unless-stopped --network ${networkName} ${memFlag} -p ${tenant.ui_port}:80 ${imageTag}`);
+
+  console.log(`[${slug}] UI template swapped to ${imageTag}`);
+}
+
 module.exports = {
-  provisionTenant, stopTenant, restartTenant, getTenantLogs,
+  provisionTenant, provisionFreeTenant, upgradeFromFree,
+  stopTenant, restartTenant, getTenantLogs,
   checkAvailability, provisionServer, migrateTenant, repairProvisioning,
+  swapUiTemplate,
   run, sshPrefix,
 };
