@@ -12,7 +12,7 @@ function mysqlExec(sql) {
 
 const TEMPLATE_DIR = '/opt/caffe-registry/templates';
 const TENANTS_DIR = '/opt/cafe-azzura/tenants';
-const RELEASES_DIR = '/opt/cafe-registry/releases';
+const RELEASES_DIR = '/opt/caffe-registry/releases';
 
 const run = (cmd) => execSync(cmd, { encoding: 'utf8', shell: '/bin/bash', timeout: 300000 });
 
@@ -185,7 +185,8 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
       run(`rm -rf ${destDir} && mkdir -p ${destDir}`);
       const release = getLatestRelease(part);
       if (release) {
-        run(`cd ${destDir} && tar -xzf ${release}`);
+        // --no-same-owner dan hapus macOS metadata files (._*)
+        run(`cd ${destDir} && tar -xzf ${release} --no-same-owner 2>/dev/null; find ${destDir} -name '._*' -delete 2>/dev/null; true`);
       }
     }
   });
