@@ -131,13 +131,22 @@ function proxyToRefBackend(req, res, refPort) {
 
 // ─── Inline routes pakai req.db (tenant-aware) ─────────────────
 
-// Products
+// Products — return { products, count } agar cafe-admin bisa pakai data?.products
 app.get('/api/products', async (req, res) => {
   try {
-    const [rows] = await req.db.query(
-      'SELECT p.*, c.name as category_name FROM products p LEFT JOIN categories c ON p.category_id=c.id WHERE (p.is_available=1 OR p.is_available IS NULL) ORDER BY p.created_at DESC'
+    const { status, category_id, search, limit = 100, page = 1 } = req.query;
+    let where = '1=1';
+    const params = [];
+    if (status === 'active') { where += ' AND (p.is_available=1 OR p.is_available IS NULL)'; }
+    if (category_id) { where += ' AND p.category_id=?'; params.push(parseInt(category_id)); }
+    if (search) { where += ' AND p.name LIKE ?'; params.push(`%${search}%`); }
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const [[{ total }]] = await req.db.query(`SELECT COUNT(*) as total FROM products p WHERE ${where}`, params);
+    const [products] = await req.db.query(
+      `SELECT p.*, c.name as category_name FROM products p LEFT JOIN categories c ON p.category_id=c.id WHERE ${where} ORDER BY p.created_at DESC LIMIT ? OFFSET ?`,
+      [...params, parseInt(limit), offset]
     );
-    res.json(rows);
+    res.json({ products, count: products.length, pagination: { total, page: parseInt(page), limit: parseInt(limit), pages: Math.ceil(total / parseInt(limit)) } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/api/products', authenticate, async (req, res) => {
@@ -159,10 +168,12 @@ app.delete('/api/products/:id', authenticate, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Categories
+// Categories — return { categories, count }
 app.get('/api/categories', async (req, res) => {
-  try { const [rows] = await req.db.query('SELECT * FROM categories WHERE is_active=1'); res.json(rows); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const [categories] = await req.db.query('SELECT * FROM categories WHERE is_active=1 ORDER BY name');
+    res.json({ categories, count: categories.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/api/categories', authenticate, async (req, res) => {
   try {
@@ -175,19 +186,27 @@ app.put('/api/categories/:id', authenticate, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Tables
+// Tables — return { tables }
 app.get('/api/tables', authenticate, async (req, res) => {
-  try { const [rows] = await req.db.query('SELECT * FROM `tables` ORDER BY number ASC'); res.json(rows); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const [tables] = await req.db.query('SELECT * FROM `tables` ORDER BY number ASC');
+    res.json({ tables, count: tables.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Orders
+// Orders — return { orders, count }
 app.get('/api/orders', authenticate, async (req, res) => {
   try {
-    const [rows] = await req.db.query(
-      'SELECT o.*, t.number as table_number FROM orders o LEFT JOIN `tables` t ON o.table_id=t.id ORDER BY o.created_at DESC LIMIT 50'
+    const { status, limit = 50, page = 1 } = req.query;
+    let where = '1=1';
+    const params = [];
+    if (status) { where += ' AND o.order_status=?'; params.push(status); }
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const [orders] = await req.db.query(
+      `SELECT o.*, t.number as table_number FROM orders o LEFT JOIN \`tables\` t ON o.table_id=t.id WHERE ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`,
+      [...params, parseInt(limit), offset]
     );
-    res.json(rows);
+    res.json({ orders, count: orders.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -239,19 +258,23 @@ app.put('/api/orders/:id', authenticate, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Users
+// Users — return { users }
 app.get('/api/users', authenticate, async (req, res) => {
-  try { const [rows] = await req.db.query('SELECT id,name,email,role,status,created_at FROM users ORDER BY created_at DESC'); res.json(rows); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const [users] = await req.db.query('SELECT id,name,email,role,status,balance,is_priority,created_at FROM users ORDER BY created_at DESC');
+    res.json({ users, count: users.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Branches
+// Branches — return { branches }
 app.get('/api/branches', authenticate, async (req, res) => {
-  try { const [rows] = await req.db.query('SELECT * FROM branches WHERE is_active=1'); res.json(rows); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const [branches] = await req.db.query('SELECT * FROM branches WHERE is_active=1 ORDER BY is_main DESC, name');
+    res.json({ branches, count: branches.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/api/branches/public', async (req, res) => {
-  try { const [rows] = await req.db.query('SELECT * FROM branches WHERE is_active=1'); res.json({ branches: rows }); }
+  try { const [branches] = await req.db.query('SELECT * FROM branches WHERE is_active=1'); res.json({ branches }); }
   catch { res.json({ branches: [] }); }
 });
 
@@ -274,14 +297,37 @@ app.get('/api/dashboard/stats', authenticate, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Payment methods
+// Payment methods — { methods }
 app.get('/api/payments/methods', async (req, res) => {
   try {
     const [methods] = await req.db.query(
-      'SELECT id, name, code, type, description, icon FROM payment_methods WHERE is_active = 1 ORDER BY sort_order'
+      'SELECT * FROM payment_methods WHERE is_active = 1 ORDER BY sort_order'
     );
     res.json({ methods });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/payments/methods', authenticate, async (req, res) => {
+  try {
+    const { name, code, type, description, icon, sort_order } = req.body;
+    const [r] = await req.db.query(
+      'INSERT INTO payment_methods (name, code, type, description, icon, sort_order, is_active) VALUES (?,?,?,?,?,?,1)',
+      [name, code, type, description||null, icon||null, sort_order||99]
+    );
+    res.status(201).json({ id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/payments/methods/:id', authenticate, async (req, res) => {
+  try {
+    const fields = [], vals = [];
+    for (const [k,v] of Object.entries(req.body)) { fields.push(`${k}=?`); vals.push(v); }
+    vals.push(req.params.id);
+    await req.db.query(`UPDATE payment_methods SET ${fields.join(',')} WHERE id=?`, vals);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/payments/methods/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM payment_methods WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Settings (public)
@@ -335,6 +381,16 @@ app.put('/api/settings', authenticate, async (req, res) => {
       );
     }
     res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Shifts list — { shifts }
+app.get('/api/shifts', authenticate, async (req, res) => {
+  try {
+    const [shifts] = await req.db.query(
+      'SELECT s.*, u.name as opened_by_name FROM shifts s LEFT JOIN users u ON u.id=s.opened_by ORDER BY s.opened_at DESC LIMIT 30'
+    );
+    res.json({ shifts, count: shifts.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
