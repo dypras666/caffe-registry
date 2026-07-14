@@ -439,9 +439,30 @@ app.get('/api/rooms', authenticate, async (req, res) => {
   try { const [rooms] = await req.db.query('SELECT * FROM rooms ORDER BY name'); res.json({ rooms }); }
   catch { res.json({ rooms: [] }); }
 });
-app.post('/api/rooms', authenticate, (req, res) => res.json({ success: true, id: 0 }));
-app.put('/api/rooms/:id', authenticate, (req, res) => res.json({ success: true }));
-app.delete('/api/rooms/:id', authenticate, (req, res) => res.json({ success: true }));
+app.post('/api/rooms', authenticate, async (req, res) => {
+  try {
+    const { name, description, capacity, sort_order, is_active } = req.body;
+    const [r] = await req.db.query(
+      'INSERT INTO rooms (name, description, capacity, sort_order, is_active) VALUES (?,?,?,?,?)',
+      [name, description||null, parseInt(capacity)||0, parseInt(sort_order)||0, is_active?1:0]
+    );
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/rooms/:id', authenticate, async (req, res) => {
+  try {
+    const { name, description, capacity, sort_order, is_active } = req.body;
+    await req.db.query(
+      'UPDATE rooms SET name=?,description=?,capacity=?,sort_order=?,is_active=? WHERE id=?',
+      [name, description||null, parseInt(capacity)||0, parseInt(sort_order)||0, is_active?1:0, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/rooms/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM rooms WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // Orders cancel-requests actions
 app.post('/api/orders/cancel-requests/:id/approve', authenticate, async (req, res) => {
@@ -625,6 +646,177 @@ app.get('/api/media/list', authenticate, async (req, res) => {
 // Integrations list — return { integrations }
 app.get('/api/integrations', authenticate, async (req, res) => res.json({ integrations: [], count: 0 }));
 app.get('/api/integrations/logs', authenticate, async (req, res) => res.json({ logs: [], count: 0 }));
+
+// ─── CRUD handlers untuk semua entitas ────────────────────────
+
+// Tables CRUD
+app.post('/api/tables', authenticate, async (req, res) => {
+  try {
+    const { number, capacity, status } = req.body;
+    const [r] = await req.db.query('INSERT INTO `tables` (number, capacity, status) VALUES (?,?,?)', [number, parseInt(capacity)||4, status||'available']);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/tables/:id', authenticate, async (req, res) => {
+  try {
+    const { number, capacity, status } = req.body;
+    await req.db.query('UPDATE `tables` SET number=?,capacity=?,status=? WHERE id=?', [number, parseInt(capacity)||4, status||'available', req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/tables/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM `tables` WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Users CRUD
+app.post('/api/users', authenticate, async (req, res) => {
+  try {
+    const { name, email, password, role, phone } = req.body;
+    const bcrypt = require('bcryptjs');
+    const hashed = await bcrypt.hash(password || 'password123', 10);
+    const [r] = await req.db.query('INSERT INTO users (name, email, password, role, phone, status) VALUES (?,?,?,?,?,?)', [name, email, hashed, role||'kasir', phone||null, 'active']);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/users/:id', authenticate, async (req, res) => {
+  try {
+    const { name, email, role, phone, status, balance, is_priority } = req.body;
+    const fields = [], vals = [];
+    if (name !== undefined) { fields.push('name=?'); vals.push(name); }
+    if (email !== undefined) { fields.push('email=?'); vals.push(email); }
+    if (role !== undefined) { fields.push('role=?'); vals.push(role); }
+    if (phone !== undefined) { fields.push('phone=?'); vals.push(phone); }
+    if (status !== undefined) { fields.push('status=?'); vals.push(status); }
+    if (balance !== undefined) { fields.push('balance=?'); vals.push(parseFloat(balance)); }
+    if (is_priority !== undefined) { fields.push('is_priority=?'); vals.push(is_priority?1:0); }
+    if (!fields.length) return res.json({ success: true });
+    vals.push(req.params.id);
+    await req.db.query(`UPDATE users SET ${fields.join(',')} WHERE id=?`, vals);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/users/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM users WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Expenses CRUD
+app.post('/api/expenses', authenticate, async (req, res) => {
+  try {
+    const { title, amount, category_id, date, notes } = req.body;
+    const [r] = await req.db.query('INSERT INTO expenses (title, amount, category_id, date, notes, created_by) VALUES (?,?,?,?,?,?)', [title, parseFloat(amount), category_id||null, date||new Date().toISOString().split('T')[0], notes||null, req.user.id]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/expenses/:id', authenticate, async (req, res) => {
+  try {
+    const { title, amount, category_id, date, notes } = req.body;
+    await req.db.query('UPDATE expenses SET title=?,amount=?,category_id=?,date=?,notes=? WHERE id=?', [title, parseFloat(amount), category_id||null, date, notes||null, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/expenses/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM expenses WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Vouchers CRUD
+app.post('/api/vouchers', authenticate, async (req, res) => {
+  try {
+    const { code, name, type, value, min_order, max_discount, start_date, end_date, usage_limit, is_active } = req.body;
+    const [r] = await req.db.query('INSERT INTO vouchers (code, name, type, value, min_order, max_discount, start_date, end_date, usage_limit, is_active) VALUES (?,?,?,?,?,?,?,?,?,?)', [code, name, type||'percentage', parseFloat(value), parseFloat(min_order||0), max_discount?parseFloat(max_discount):null, start_date||null, end_date||null, usage_limit||null, is_active?1:1]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/vouchers/:id', authenticate, async (req, res) => {
+  try {
+    const { code, name, type, value, min_order, max_discount, start_date, end_date, usage_limit, is_active } = req.body;
+    await req.db.query('UPDATE vouchers SET code=?,name=?,type=?,value=?,min_order=?,max_discount=?,start_date=?,end_date=?,usage_limit=?,is_active=? WHERE id=?', [code, name, type, parseFloat(value), parseFloat(min_order||0), max_discount?parseFloat(max_discount):null, start_date||null, end_date||null, usage_limit||null, is_active?1:0, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/vouchers/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM vouchers WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Ingredients CRUD
+app.post('/api/ingredients', authenticate, async (req, res) => {
+  try {
+    const { name, unit, stock_qty, min_stock, unit_cost } = req.body;
+    const [r] = await req.db.query('INSERT INTO ingredients (name, unit, stock_qty, min_stock, unit_cost) VALUES (?,?,?,?,?)', [name, unit||'pcs', parseFloat(stock_qty||0), parseFloat(min_stock||0), parseFloat(unit_cost||0)]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/ingredients/:id', authenticate, async (req, res) => {
+  try {
+    const { name, unit, stock_qty, min_stock, unit_cost } = req.body;
+    await req.db.query('UPDATE ingredients SET name=?,unit=?,stock_qty=?,min_stock=?,unit_cost=? WHERE id=?', [name, unit, parseFloat(stock_qty||0), parseFloat(min_stock||0), parseFloat(unit_cost||0), req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/ingredients/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM ingredients WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Printers CRUD
+app.post('/api/printers', authenticate, async (req, res) => {
+  try {
+    const { name, type, connection, ip, port, paper_width, char_per_line, is_default, is_active, auto_cut, header_text, footer_text, sort_order } = req.body;
+    const [r] = await req.db.query('INSERT INTO printers (name, type, connection, ip, port, paper_width, char_per_line, is_default, is_active, auto_cut, header_text, footer_text, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', [name, type||'receipt', connection||'browser', ip||null, parseInt(port||9100), paper_width||'80mm', parseInt(char_per_line||42), is_default?1:0, is_active?1:1, auto_cut?1:1, header_text||'', footer_text||'', parseInt(sort_order||99)]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/printers/:id', authenticate, async (req, res) => {
+  try {
+    const fields = [], vals = [];
+    const allowed = ['name','type','connection','ip','port','paper_width','char_per_line','is_default','is_active','auto_cut','header_text','footer_text','sort_order'];
+    for (const k of allowed) if (req.body[k] !== undefined) { fields.push(`${k}=?`); vals.push(req.body[k]); }
+    vals.push(req.params.id);
+    await req.db.query(`UPDATE printers SET ${fields.join(',')} WHERE id=?`, vals);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/printers/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM printers WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Stations CRUD
+app.post('/api/stations', authenticate, async (req, res) => {
+  try {
+    const { name, type, description, is_active } = req.body;
+    const [r] = await req.db.query('INSERT INTO stations (name, type, description, is_active) VALUES (?,?,?,?)', [name, type||'kitchen', description||null, is_active?1:1]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/stations/:id', authenticate, async (req, res) => {
+  try {
+    await req.db.query('UPDATE stations SET name=?,type=?,description=?,is_active=? WHERE id=?', [req.body.name, req.body.type||'kitchen', req.body.description||null, req.body.is_active?1:0, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/stations/:id', authenticate, async (req, res) => {
+  try { await req.db.query('DELETE FROM stations WHERE id=?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Units CRUD
+app.post('/api/units', authenticate, async (req, res) => {
+  try {
+    const { name, symbol, type, base_unit_id, conversion_factor, is_active } = req.body;
+    const [r] = await req.db.query('INSERT INTO units (name, symbol, type, base_unit_id, conversion_factor, is_active) VALUES (?,?,?,?,?,?)', [name, symbol||name, type||'custom', base_unit_id||null, parseFloat(conversion_factor||1), is_active?1:1]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/units/:id', authenticate, async (req, res) => {
+  try {
+    await req.db.query('UPDATE units SET name=?,symbol=?,type=?,base_unit_id=?,conversion_factor=?,is_active=? WHERE id=?', [req.body.name, req.body.symbol||req.body.name, req.body.type||'custom', req.body.base_unit_id||null, parseFloat(req.body.conversion_factor||1), req.body.is_active?1:0, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // Untuk semua route lain — proxy ke backend nusantara2024 sebagai fallback
 // (route files nusantara2024 connect ke DB nusantara2024, BUKAN tenant yang request)
