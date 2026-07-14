@@ -54,7 +54,19 @@ else
     echo "→ Frontend deployed"
   fi
 
+  # Sync shared-backend
+  sync_dir "shared-backend"
+
   restart_registry
+
+  # Rebuild tenant releases dari nusantara2024 (build cafe-admin dan cafe-ui terbaru)
+  echo "→ Rebuilding tenant releases on server..."
+  sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password root@46.8.226.36 \
+    "mkdir -p /opt/caffe-registry/releases/admin /opt/caffe-registry/releases/ui && \
+     cd /opt/cafe-azzura/tenants/nusantara2024/backend/public/admin && tar -czf /opt/caffe-registry/releases/admin/latest.tar.gz --no-xattrs . && \
+     cd /opt/cafe-azzura/tenants/nusantara2024/backend/public/ui && tar -czf /opt/caffe-registry/releases/ui/latest.tar.gz --no-xattrs . && \
+     systemctl restart cafe-shared-backend && echo 'Releases rebuilt + shared-backend restarted'" \
+    2>/dev/null | grep -v "WARNING\|post-quantum\|session"
 fi
 
 echo "✅ Sync complete"

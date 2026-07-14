@@ -151,20 +151,28 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
 
     // Buat admin user default
     const bcrypt = require('bcryptjs');
-    const adminHash = await bcrypt.hash('admin123', 10);
+    const defaultPassword = 'admin123';
+    const adminHash = await bcrypt.hash(defaultPassword, 10);
+    const adminEmail = tenant.admin_email || `admin@${slug}.id`;
     const tenantConn = await require('mysql2/promise').createConnection({
       host: sharedDbHost, port: sharedDbPort,
       user: dbUser, password: dbPass, database: dbName,
     });
     await tenantConn.query(
       `INSERT IGNORE INTO users (name, email, password, role, status) VALUES (?,?,?,?,?)`,
-      ['Admin', `admin@${slug}.id`, adminHash, 'admin', 'active']
+      ['Admin', adminEmail, adminHash, 'admin', 'active']
     );
     await tenantConn.query(
       `INSERT IGNORE INTO branches (name, code, is_main, is_active) VALUES (?,?,?,?)`,
-      [slug, 'MAIN', 1, 1]
+      [tenant.name || slug, 'MAIN', 1, 1]
     );
     await tenantConn.end();
+
+    // Simpan default password di container_password supaya bisa ditampilkan di superadmin
+    await db.query(
+      'UPDATE tenants SET container_password=? WHERE id=?',
+      [defaultPassword, tenantId]
+    );
 
     // Jalankan migrate.js dari refBackend langsung (sudah terbukti bekerja)
     // Arahkan CWD ke refBackend agar require('../config/database') resolve dengan benar
