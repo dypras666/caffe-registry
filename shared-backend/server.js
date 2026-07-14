@@ -279,6 +279,38 @@ app.get('/api/settings', async (req, res) => {
   } catch { res.json({}); }
 });
 
+// Settings single key — GET /api/settings/:key
+app.get('/api/settings/:key', async (req, res) => {
+  try {
+    const [[row]] = await req.db.query(
+      'SELECT setting_value FROM system_settings WHERE setting_key = ? AND is_public = 1',
+      [req.params.key]
+    );
+    if (!row) return res.json({ value: null });
+    res.json({ value: row.setting_value });
+  } catch { res.json({ value: null }); }
+});
+
+// Posts
+app.get('/api/posts', async (req, res) => {
+  try {
+    const [rows] = await req.db.query(
+      "SELECT id, title, slug, excerpt, featured_image, published_at FROM posts WHERE status='published' ORDER BY published_at DESC LIMIT 20"
+    );
+    res.json(rows);
+  } catch { res.json([]); }
+});
+
+app.get('/api/posts/:slug', async (req, res) => {
+  try {
+    const [[post]] = await req.db.query(
+      "SELECT * FROM posts WHERE slug=? AND status='published'", [req.params.slug]
+    );
+    if (!post) return res.status(404).json({ error: 'Not found' });
+    res.json(post);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put('/api/settings', authenticate, async (req, res) => {
   try {
     for (const [k, v] of Object.entries(req.body)) {
@@ -310,15 +342,30 @@ app.get('/api/shifts/current', authenticate, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Media (gallery) — return array agar .map() tidak error
+app.get('/api/media', async (req, res) => {
+  try {
+    const [rows] = await req.db.query(
+      "SELECT id, url, filename, original_name, folder FROM media ORDER BY created_at DESC LIMIT 30"
+    );
+    res.json(rows);
+  } catch { res.json([]); }
+});
+
+// Setup status — return object yang aman
+app.get('/api/setup/status', async (req, res) => {
+  res.json({ installed: true, version: '1.0' });
+});
+
 // Untuk semua route lain — proxy ke backend nusantara2024 sebagai fallback
 // (route files nusantara2024 connect ke DB nusantara2024, BUKAN tenant yang request)
 // Ini HANYA dipakai jika shared-backend tidak punya handler inline di atas.
 // TODO: tambah route inline untuk semua endpoint cafe-admin yang dibutuhkan.
 const STUB_ROUTES = [
   'shifts', 'orders', 'users', 'bookings', 'members', 'reports',
-  'ingredients', 'stock', 'expenses', 'vouchers', 'roles', 'media',
-  'printers', 'stations', 'variants', 'recipes', 'units', 'hr', 'branches',
-  'audit', 'register', 'setup',
+  'ingredients', 'stock', 'expenses', 'vouchers', 'roles',
+  'printers', 'stations', 'variants', 'recipes', 'units', 'hr',
+  'audit', 'register',
 ];
 for (const name of STUB_ROUTES) {
   app.use(`/api/${name}`, (req, res, next) => {
