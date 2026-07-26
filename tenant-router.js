@@ -124,30 +124,23 @@ app.use(async (req, res, next) => {
   next();
 });
 
-const SHARED_BACKEND_PORT = parseInt(process.env.SHARED_BACKEND_PORT || '3900');
-
 app.use('/', (req, res) => {
   const slug = req.tenantSlug;
   const config = req.tenantConfig;
-  const isShared = config.container_status === 'shared' || !config.backend_port;
 
-  // API requests
+  // API → proxy ke backend (semua tier punya backend_port sekarang)
   if (req.originalUrl.startsWith('/api')) {
-    if (isShared) {
-      // Inject slug header agar shared-backend tahu tenant mana
-      req.headers['x-tenant-slug'] = slug;
-      return proxyRequest(req, res, SHARED_BACKEND_PORT);
-    }
+    if (!config.backend_port) return res.status(503).json({ error: 'Backend belum siap' });
     return proxyRequest(req, res, config.backend_port);
   }
 
-  // Static/UI requests
-  if (!isShared && (config.ui_port || config.admin_port)) {
+  // UI/Admin → Docker port (paid) atau static dari disk (free/shared)
+  if (config.ui_port || config.admin_port) {
     const targetPort = req.tenantType === 'admin' ? config.admin_port : config.ui_port;
     return proxyRequest(req, res, targetPort);
   }
 
-  // Shared & legacy: serve static files dari disk
+  // Static dari disk (free tier)
   serveStaticFallback(req, res, slug);
 });
 

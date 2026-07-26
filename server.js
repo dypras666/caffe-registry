@@ -882,6 +882,7 @@ const settingsRouter = require('./routes/settings');
 const queueRouter = require('./routes/queue');
 const backupRouter = require('./routes/backup');
 const addonsRouter = require('./routes/addons');
+const gojekRouter = require('./routes/gojek');
 const containersRouter = require('./routes/containers');
 const templatesRouter = require('./routes/templates');
 const { startAutoScaler } = require('./services/autoscaler');
@@ -899,6 +900,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/queue', queueRouter);
 app.use('/api/backup', backupRouter);
 app.use('/api/addons', addonsRouter);
+app.use('/api/addons/gojek', gojekRouter);
 app.use('/api/tenants', containersRouter);
 app.use('/api/templates', templatesRouter);
 

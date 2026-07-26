@@ -1,7 +1,14 @@
-node_modules/
+*.local
+*.log
+*.tar.gz
 .env
 .env.local
+.next/
 backups/
-uploads/
-*.log
 coverage/
+dist/
+node_modules/
+uploads/
+public/assets/
+.DS_Store
+bca-tokens.json

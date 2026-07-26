@@ -75,10 +75,11 @@ function dockerNetwork(slug) { return `tenant-${slug}`; }
 function dockerDbContainer(slug) { return `${slug}-db`; }
 function dockerBackendContainer(slug) { return `${slug}-backend`; }
 
-// ─── Shared (FREE) provisioning ─────────────────────────
-// Buat DB + user MySQL di shared container. Tidak deploy container baru.
+// ─── FREE provisioning: cafe-backend sebagai systemd service ─
+// Tidak pakai Docker, tidak pakai shared-backend.
+// cafe-backend di-deploy ke /tenants/{slug}/backend, connect ke shared MySQL.
 async function provisionFreeTenant(tenantId, slug, tenant) {
-  console.log(`[${slug}] FREE tier → shared provisioning`);
+  console.log(`[${slug}] FREE tier → cafe-backend systemd provisioning`);
   const startAll = Date.now();
 
   await db.query("UPDATE tenants SET container_status='provisioning' WHERE id=?", [tenantId]);
@@ -88,9 +89,13 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
   const dbPass = crypto.randomBytes(16).toString('hex');
   const secret = crypto.randomBytes(32).toString('hex');
 
+  // Alokasi port untuk backend (tidak ada ui/admin port — static dari disk)
+  const [portRows] = await db.query('SELECT MAX(backend_port) as maxPort FROM tenants');
+  const backendPort = Math.max(3200, (portRows[0]?.maxPort || 3100) + 10);
+
   await db.query(
-    'UPDATE tenants SET backend_port=NULL, ui_port=NULL, admin_port=NULL, db_name=?, db_user=?, db_pass=?, secret=? WHERE id=?',
-    [dbName, dbUser, dbPass, secret, tenantId]
+    'UPDATE tenants SET backend_port=?, ui_port=NULL, admin_port=NULL, db_name=?, db_user=?, db_pass=?, secret=? WHERE id=?',
+    [backendPort, dbName, dbUser, dbPass, secret, tenantId]
   );
 
   // Buat DB + user di shared MySQL (host:port dari env)
@@ -110,33 +115,58 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
     await conn.end();
   });
 
-  // Inisialisasi schema DB — jalankan migrate.js dari tenant aktif sebagai referensi
-  await logProvisionTimed(tenantId, slug, 'shared.db.init', async () => {
+  // ═══ 1. Buat DB di shared MySQL ═══
+  await logProvisionTimed(tenantId, slug, 'shared.db.create', async () => {
+    const conn = await require('mysql2/promise').createConnection({
+      host: sharedDbHost, port: sharedDbPort, user: 'root', password: sharedDbRoot,
+    });
+    await conn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    await conn.query(`CREATE USER IF NOT EXISTS '${dbUser}'@'%' IDENTIFIED BY '${dbPass}'`);
+    await conn.query(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${dbUser}'@'%'`);
+    await conn.query('FLUSH PRIVILEGES');
+    await conn.end();
+  });
+
+  // ═══ 2. Deploy cafe-backend dari template/referensi ═══
+  await logProvisionTimed(tenantId, slug, 'deploy.backend', async () => {
     const backendDir = `${TENANTS_DIR}/${slug}/backend`;
-    run(`mkdir -p ${backendDir}/database`);
+    const refBackend = `${TENANTS_DIR}/nusantara2024/backend`;
 
-    // Cari tenant aktif yang bisa dipakai sebagai sumber migrate.js
-    const refTenant = require('fs').existsSync(`${TENANTS_DIR}/nusantara2024/backend/database/migrate.js`)
-      ? 'nusantara2024'
-      : null;
-    if (!refTenant) throw new Error('Tidak ada tenant referensi untuk migrate.js');
+    // Copy dari referensi (exclude node_modules dan .env)
+    run(`mkdir -p ${backendDir}`);
+    run(`rsync -a --exclude='node_modules' --exclude='.env' --exclude='public' --exclude='uploads' ${refBackend}/ ${backendDir}/`);
 
-    const refBackend = `${TENANTS_DIR}/${refTenant}/backend`;
-    const migrateScript = `${backendDir}/database/migrate.js`;
-
-    if (!require('fs').existsSync(migrateScript)) {
-      run(`cp ${refBackend}/database/migrate.js ${migrateScript}`);
-    }
-
-    // Symlink node_modules + config dari tenant referensi agar migrate.js bisa resolve deps
+    // Symlink node_modules dari referensi (hemat disk, semua pakai module yang sama)
     if (!require('fs').existsSync(`${backendDir}/node_modules`)) {
       run(`ln -sf ${refBackend}/node_modules ${backendDir}/node_modules`);
     }
-    if (!require('fs').existsSync(`${backendDir}/config`)) {
-      run(`cp -r ${refBackend}/config ${backendDir}/config`);
-    }
 
-    // Import base schema (65 tabel) dengan FK checks disabled
+    // Buat .env
+    const envContent = [
+      `NODE_ENV=production`,
+      `PORT=${backendPort}`,
+      `DB_HOST=${sharedDbHost}`,
+      `DB_PORT=${sharedDbPort}`,
+      `DB_USER=${dbUser}`,
+      `DB_PASSWORD=${dbPass}`,
+      `DB_NAME=${dbName}`,
+      `DB_SOCKET=`,
+      `JWT_SECRET=${secret}`,
+      `TENANT_SLUG=${slug}`,
+      `TENANT_NAME=${(tenant.name || slug).replace(/'/g, '')}`,
+      `PRICING_TIER=free`,
+      `RAM_MB=64`,
+      `CPU_CORES=0.25`,
+    ].join('\n');
+    require('fs').writeFileSync(`${backendDir}/.env`, envContent);
+  });
+
+  // ═══ 3. Init DB schema ═══
+  await logProvisionTimed(tenantId, slug, 'shared.db.init', async () => {
+    const backendDir = `${TENANTS_DIR}/${slug}/backend`;
+    const refBackend = `${TENANTS_DIR}/nusantara2024/backend`;
+
+    // Import base schema
     const baseSchema = `${TEMPLATE_DIR}/base-schema.sql`;
     if (require('fs').existsSync(baseSchema)) {
       const conn = await require('mysql2/promise').createConnection({
@@ -149,66 +179,83 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
       await conn.end();
     }
 
-    // Buat admin user default
-    const bcrypt = require('bcryptjs');
-    const defaultPassword = 'admin123';
-    const adminHash = await bcrypt.hash(defaultPassword, 10);
-    const adminEmail = tenant.admin_email || `admin@${slug}.id`;
-    const tenantConn = await require('mysql2/promise').createConnection({
-      host: sharedDbHost, port: sharedDbPort,
-      user: dbUser, password: dbPass, database: dbName,
-    });
-    await tenantConn.query(
-      `INSERT IGNORE INTO users (name, email, password, role, status) VALUES (?,?,?,?,?)`,
-      ['Admin', adminEmail, adminHash, 'admin', 'active']
-    );
-    await tenantConn.query(
-      `INSERT IGNORE INTO branches (name, code, is_main, is_active) VALUES (?,?,?,?)`,
-      [tenant.name || slug, 'MAIN', 1, 1]
-    );
-    await tenantConn.end();
-
-    // Simpan default password di container_password supaya bisa ditampilkan di superadmin
-    await db.query(
-      'UPDATE tenants SET container_password=? WHERE id=?',
-      [defaultPassword, tenantId]
-    );
-
-    // Jalankan migrate.js dari refBackend langsung (sudah terbukti bekerja)
-    // Arahkan CWD ke refBackend agar require('../config/database') resolve dengan benar
+    // Jalankan migrate.js dari refBackend
     run(
       `cd ${refBackend} && ` +
       `DB_HOST=${sharedDbHost} DB_PORT=${sharedDbPort} DB_USER=${dbUser} ` +
       `DB_PASSWORD=${dbPass} DB_NAME=${dbName} DB_SOCKET="" ` +
       `node database/migrate.js 2>&1`
     );
+
+    // Seed admin user + branch
+    const bcrypt = require('bcryptjs');
+    const defaultPassword = 'admin123';
+    const adminHash = await bcrypt.hash(defaultPassword, 10);
+    const adminEmail = tenant.admin_email || `admin@${slug}.id`;
+    const tenantConn = await require('mysql2/promise').createConnection({
+      host: sharedDbHost, port: sharedDbPort, user: dbUser, password: dbPass, database: dbName,
+    });
+    await tenantConn.query('INSERT IGNORE INTO users (name,email,password,role,status) VALUES (?,?,?,?,?)', ['Admin', adminEmail, adminHash, 'admin', 'active']);
+    await tenantConn.query('INSERT IGNORE INTO branches (name,code,is_main,is_active) VALUES (?,?,?,?)', [tenant.name||slug, 'MAIN', 1, 1]);
+    await tenantConn.end();
+    await db.query('UPDATE tenants SET container_password=? WHERE id=?', [defaultPassword, tenantId]);
   });
 
-  // Deploy static files (admin + ui) dari release tarball
+  // ═══ 4. Deploy static files (admin + ui) ═══
   await logProvisionTimed(tenantId, slug, 'shared.static.deploy', async () => {
     const pubDir = `${TENANTS_DIR}/${slug}/backend/public`;
-
     for (const part of ['admin', 'ui']) {
       const destDir = `${pubDir}/${part}`;
       run(`rm -rf ${destDir} && mkdir -p ${destDir}`);
       const release = getLatestRelease(part);
       if (release) {
-        // --no-same-owner dan hapus macOS metadata files (._*)
         run(`cd ${destDir} && tar -xzf ${release} --no-same-owner 2>/dev/null; find ${destDir} -name '._*' -delete 2>/dev/null; true`);
       }
+    }
+  });
+
+  // ═══ 5. Buat systemd service untuk backend ini ═══
+  await logProvisionTimed(tenantId, slug, 'systemd.create', async () => {
+    const backendDir = `${TENANTS_DIR}/${slug}/backend`;
+    const serviceContent = `[Unit]
+Description=Caffe.id Tenant Backend - ${slug}
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${backendDir}
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+EnvironmentFile=${backendDir}/.env
+
+[Install]
+WantedBy=multi-user.target
+`;
+    require('fs').writeFileSync(`/etc/systemd/system/cafe-tenant-${slug}.service`, serviceContent);
+    run('systemctl daemon-reload');
+    run(`systemctl enable cafe-tenant-${slug}`);
+    run(`systemctl start cafe-tenant-${slug}`);
+    // Tunggu backend ready
+    for (let i = 0; i < 15; i++) {
+      try {
+        run(`curl -sf http://127.0.0.1:${backendPort}/api/health > /dev/null 2>&1`);
+        break;
+      } catch { run('sleep 2'); }
     }
   });
 
   const domain = process.env.APP_DOMAIN || 'caffe.id';
   const adminUrl = `https://office-${slug}.${domain}/admin`;
   await db.query(
-    "UPDATE tenants SET status='active', container_status='shared', admin_url=? WHERE id=?",
+    "UPDATE tenants SET status='active', container_status='running', admin_url=? WHERE id=?",
     [adminUrl, tenantId]
   );
 
   await logProvision(tenantId, slug, 'provision.complete', 'success',
-    `FREE shared complete in ${Date.now() - startAll}ms`);
-  console.log(`[${slug}] FREE provisioning done (${Date.now() - startAll}ms)`);
+    `FREE cafe-backend systemd complete in ${Date.now() - startAll}ms`);
+  console.log(`[${slug}] FREE provisioning done (port ${backendPort}, ${Date.now() - startAll}ms)`);
 }
 
 // ─── Provisioning ───────────────────────────────────────
