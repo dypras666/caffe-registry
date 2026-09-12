@@ -52,4 +52,46 @@ router.put('/', async (req, res) => {
   }
 });
 
+// GET /api/settings/tracking — return tracking settings as key-value object
+router.get('/tracking', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN (?, ?, ?, ?)',
+      ['fb_pixel_id', 'tiktok_pixel_id', 'ga_id', 'gtm_id']
+    );
+    const settings = {};
+    rows.forEach(r => { settings[r.setting_key] = r.setting_value; });
+    res.json({ settings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/settings/:key — return single setting
+router.get('/:key', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT setting_value, is_public FROM system_settings WHERE setting_key = ?', [req.params.key]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Setting not found' });
+    
+    const setting = rows[0];
+    if (!setting.is_public) {
+      // Basic check for admin auth if not public
+      const authHeader = req.headers.authorization;
+      let isAdmin = false;
+      if (authHeader) {
+        try {
+          const jwt = require('jsonwebtoken');
+          const decoded = jwt.verify(authHeader.replace('Bearer ', ''), getSecret());
+          isAdmin = decoded.role === 'superadmin';
+        } catch {}
+      }
+      if (!isAdmin) return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
+    res.json({ value: setting.setting_value, setting: { setting_value: setting.setting_value } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

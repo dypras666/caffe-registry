@@ -370,7 +370,7 @@ async function provisionTenant(tenantId, slug, email, password) {
 
     // ═══ 8. Create .env ═══
     await logProvisionTimed(tenantId, slug, 'setup.env', async () => {
-      const env = `NODE_ENV=production\nPORT=3000\nDB_HOST=${dbCName}\nDB_PORT=3306\nDB_USER=${dbUser}\nDB_PASSWORD=${dbPass}\nDB_NAME=${dbName}\nJWT_SECRET=${secret}\nTENANT_SLUG=${slug}\nTENANT_NAME=${slug.includes('nusantara') ? 'Nusantara 2024' : tenant?.name || slug}\nPRICING_TIER=${tenant?.pricing_tier || 'free'}\n`;
+      const env = `NODE_ENV=production\nPORT=3000\nDB_HOST=${dbCName}\nDB_PORT=3306\nDB_USER=${dbUser}\nDB_PASSWORD=${dbPass}\nDB_NAME=${dbName}\nJWT_SECRET=${secret}\nTENANT_SLUG=${slug}\nTENANT_NAME=${slug.includes('nusantara') ? 'Nusantara 2024' : tenant?.name || slug}\nPRICING_TIER=${tenant?.pricing_tier || 'free'}\nSTORAGE_DRIVER=s3\nSTORAGE_S3_ENDPOINT=https://is3.cloudhost.id\nSTORAGE_S3_REGION=id\nSTORAGE_S3_KEY=IPDBMUDR80XHVFNKJIIS\nSTORAGE_S3_SECRET=39hbxo1CifB8gFV2TSBJEdLA3D1P3Q3oG81JT0lA\nSTORAGE_S3_BUCKET=akas\nSTORAGE_S3_URL=https://akas.is3.cloudhost.id\n`;
       run(`cat > ${backendDir}/.env << 'ENVEOF'\n${env}\nENVEOF`);
     });
 
@@ -717,6 +717,75 @@ async function getTenantLogs(slug, lines = 100) {
   catch { return 'No logs available'; }
 }
 
+async function getTenantErrorLogs(slug, options = {}) {
+  const { page = 1, limit = 100, startDate, endDate } = options;
+  const [[tenant]] = await db.query('SELECT * FROM tenants WHERE slug = ?', [slug]);
+  if (!tenant) throw new Error('Tenant not found');
+  
+  if (tenant.backend_port) {
+    try {
+      let cmd = `journalctl -u cafe-tenant-${slug}.service -r --output=json`;
+      if (startDate) cmd += ` --since "${startDate}"`;
+      if (endDate) cmd += ` --until "${endDate}"`;
+      // Cap at 10000 lines to avoid massive memory usage
+      cmd += ` -n 10000 2>/dev/null || true`;
+      
+      const raw = run(cmd);
+      if (raw && raw.trim()) {
+        const parsed = raw.trim().split('\n').map(line => {
+          try {
+            const j = JSON.parse(line);
+            return {
+              timestamp: new Date(parseInt(j.__REALTIME_TIMESTAMP) / 1000).toISOString(),
+              message: j.MESSAGE || JSON.stringify(j)
+            };
+          } catch(e) { return { timestamp: new Date().toISOString(), message: line }; }
+        });
+        
+        const total = parsed.length;
+        const startIndex = (page - 1) * limit;
+        const logs = parsed.slice(startIndex, startIndex + limit);
+        return { logs, total, page, limit };
+      }
+      return { logs: [], total: 0, page, limit };
+    }
+    catch (e) { return { logs: [], total: 0, page, limit }; }
+  }
+  
+  // Fallback to error log file if exists
+  const logFile = `/var/log/tenant-${slug}-error.log`;
+  try { 
+    const raw = run(`tail -${limit} ${logFile} 2>/dev/null || true`);
+    if (raw && raw.trim()) {
+      const parsed = raw.trim().split('\n').map(line => ({
+        timestamp: new Date().toISOString(),
+        message: line
+      }));
+      const total = parsed.length;
+      return { logs: parsed, total, page, limit };
+    }
+    return { logs: [], total: 0, page, limit };
+  }
+  catch { return { logs: [], total: 0, page, limit }; }
+}
+
+async function clearTenantErrorLogs(slug) {
+  const [[tenant]] = await db.query('SELECT * FROM tenants WHERE slug = ?', [slug]);
+  if (!tenant) throw new Error('Tenant not found');
+  
+  // Journalctl cannot be cleared easily per-service. We just return a message.
+  if (tenant.backend_port) {
+    return { success: false, message: 'Systemd journalctl logs cannot be cleared per-service manually.' };
+  }
+  
+  const logFile = `/var/log/tenant-${slug}-error.log`;
+  try { 
+    run(`> ${logFile} 2>/dev/null || true`);
+    return { success: true };
+  }
+  catch (e) { return { success: false, message: e.message }; }
+}
+
 async function checkAvailability(slug) {
   try {
     const [rows] = await db.query('SELECT id FROM tenants WHERE slug = ?', [slug]);
@@ -800,7 +869,7 @@ async function swapUiTemplate(slug, imageTag) {
 
 module.exports = {
   provisionTenant, provisionFreeTenant, upgradeFromFree,
-  stopTenant, restartTenant, getTenantLogs,
+  stopTenant, restartTenant, getTenantLogs, getTenantErrorLogs, clearTenantErrorLogs,
   checkAvailability, provisionServer, migrateTenant, repairProvisioning,
   swapUiTemplate,
   run, sshPrefix,

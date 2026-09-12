@@ -4,7 +4,7 @@
 
 SERVER="root@46.8.226.36"
 PASS="h8I8odYa5fzi"
-REMOTE="/opt/cafe-registry"
+REMOTE="/opt/caffe-registry"
 SSH="sshpass -p '$PASS' ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password"
 RSYNC="sshpass -p '$PASS' rsync -avz --exclude='.git' --exclude='node_modules' --exclude='.env' -e 'ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password'"
 
@@ -22,8 +22,8 @@ sync_dir() {
 }
 
 restart_registry() {
-  echo "→ Restarting registry..."
-  eval "$SSH $SERVER 'PID=\$(ss -tlnp | grep 3001 | grep -oP \"pid=\K[0-9]+\" | head -1); [ -n \"\$PID\" ] && kill \$PID && sleep 1; cd $REMOTE && PORT=3001 nohup node server.js > /var/log/cafe-registry.log 2>&1 & sleep 4 && ss -tlnp | grep 3001 && echo UP || echo FAIL'" 2>/dev/null | grep -v "WARNING\|post-quantum\|session"
+  echo "→ Restarting registry and tenant-router..."
+  eval "$SSH $SERVER 'systemctl restart caffe-registry.service tenant-router.service'" 2>/dev/null | grep -v "WARNING\|post-quantum\|session"
 }
 
 # If specific file/dir passed
