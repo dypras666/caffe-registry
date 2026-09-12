@@ -564,9 +564,45 @@ app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
 app.put('/api/superadmin/tenants/:id/demo', superadminAuth, async (req, res) => {
   try {
     const { is_demo } = req.body;
+    const [[tenant]] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
+    if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+
     if (is_demo) {
       // Unset any existing demo
       await db.query('UPDATE tenants SET is_demo = FALSE');
+      
+      // Seed demo accounts into tenant DB
+      try {
+        const mysql = require('mysql2/promise');
+        const bcrypt = require('bcryptjs');
+        const tenantConn = await mysql.createConnection({
+          host: '127.0.0.1',
+          user: (tenant.db_name || '').replace('cafe_', 'cafe_').substring(0, 16),
+          password: process.env.TENANT_DB_PASS || tenant.db_pass || '',
+          database: tenant.db_name,
+          connectTimeout: 3000,
+        });
+        
+        const demoPass = await bcrypt.hash('demo1234', 10);
+        const roles = [
+          { role: 'admin', email: `owner@${tenant.slug}.id`, name: 'Owner Demo' },
+          { role: 'kasir', email: `kasir@${tenant.slug}.id`, name: 'Kasir Demo' },
+          { role: 'waiter', email: `waiter@${tenant.slug}.id`, name: 'Waiter Demo' },
+          { role: 'member', email: `member@${tenant.slug}.id`, name: 'Member Demo' }
+        ];
+
+        for (const r of roles) {
+          const [exists] = await tenantConn.query('SELECT id FROM users WHERE email = ?', [r.email]);
+          if (exists.length > 0) {
+            await tenantConn.query('UPDATE users SET password = ?, role = ? WHERE email = ?', [demoPass, r.role, r.email]);
+          } else {
+            await tenantConn.query('INSERT INTO users (name, email, password, role, status) VALUES (?, ?, ?, ?, "active")', [r.name, r.email, demoPass, r.role]);
+          }
+        }
+        await tenantConn.end();
+      } catch (err) {
+        console.error('Failed to seed demo accounts:', err);
+      }
     }
     await db.query('UPDATE tenants SET is_demo = ? WHERE id = ?', [is_demo ? 1 : 0, req.params.id]);
     res.json({ success: true });
