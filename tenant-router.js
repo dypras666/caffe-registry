@@ -128,8 +128,8 @@ app.use('/', (req, res) => {
   const slug = req.tenantSlug;
   const config = req.tenantConfig;
 
-  // API & Uploads → proxy ke backend (semua tier punya backend_port sekarang)
-  if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/uploads')) {
+  // API, Uploads & Media Proxy → proxy ke backend
+  if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/uploads') || req.originalUrl.startsWith('/m/')) {
     if (!config.backend_port) return res.status(503).json({ error: 'Backend belum siap' });
     return proxyRequest(req, res, config.backend_port);
   }
