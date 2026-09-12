@@ -371,6 +371,24 @@ app.get('/api/tenant/:id/stats', tenantAuth, async (req, res) => {
   }
 });
 
+// GET /api/demo — public, returns the current demo tenant
+app.get('/api/demo', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM tenants WHERE is_demo = 1 LIMIT 1');
+    if (rows.length === 0) return res.status(404).json({ error: 'No demo tenant found' });
+    
+    const t = rows[0];
+    const appDomain = process.env.APP_DOMAIN || 'caffe.id';
+    t.app_domain = appDomain;
+    t.ui_url = `https://${t.slug}.${appDomain}`;
+    t.admin_url = `https://office-${t.slug}.${appDomain}`;
+    
+    res.json(t);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ========== AUTH & PASSWORD RESET ==========
 
 // Forgot password
@@ -542,6 +560,21 @@ app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   }
 });
 
+// Superadmin - Set/unset demo tenant
+app.put('/api/superadmin/tenants/:id/demo', superadminAuth, async (req, res) => {
+  try {
+    const { is_demo } = req.body;
+    if (is_demo) {
+      // Unset any existing demo
+      await db.query('UPDATE tenants SET is_demo = FALSE');
+    }
+    await db.query('UPDATE tenants SET is_demo = ? WHERE id = ?', [is_demo ? 1 : 0, req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Superadmin - Delete tenant (blocked if active)
 app.delete('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
@@ -642,6 +675,33 @@ app.get('/api/superadmin/tenants/:id/logs', superadminAuth, async (req, res) => 
     const lines = parseInt(req.query.lines) || 100;
     const logs = await getTenantLogs(t.slug, lines);
     res.json({ logs });
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Get tenant error logs
+app.get('/api/superadmin/tenants/:id/error-logs', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const { getTenantErrorLogs } = require('./services/provisioner');
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 100;
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const result = await getTenantErrorLogs(t.slug, { page, limit, startDate, endDate });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: safeError(e) }); }
+});
+
+// Superadmin - Clear tenant error logs
+app.delete('/api/superadmin/tenants/:id/error-logs', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+    const { clearTenantErrorLogs } = require('./services/provisioner');
+    const result = await clearTenantErrorLogs(t.slug);
+    if (!result.success) return res.status(400).json({ error: result.message });
+    res.json({ success: true, message: 'Logs cleared' });
   } catch (e) { res.status(500).json({ error: safeError(e) }); }
 });
 

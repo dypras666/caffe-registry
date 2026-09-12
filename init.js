@@ -59,6 +59,7 @@ async function init() {
       suspended_at TIMESTAMP NULL,
       reset_token VARCHAR(255),
       reset_token_exp TIMESTAMP NULL,
+      is_demo BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       INDEX idx_slug (slug),
