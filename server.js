@@ -198,6 +198,15 @@ app.post('/api/admin/news', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/admin/news/:id — get one
+app.get('/api/admin/news/:id', superadminAuth, async (req, res) => {
+  try {
+    const [[article]] = await db.query('SELECT * FROM news WHERE id=?', [req.params.id]);
+    if (!article) return res.status(404).json({ error: 'Not found' });
+    res.json({ article });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // PUT /api/admin/news/:id — update
 app.put('/api/admin/news/:id', superadminAuth, async (req, res) => {
   try {
