@@ -187,6 +187,14 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
       `node database/migrate.js 2>&1`
     );
 
+    // Jalankan setup-demo.js
+    run(
+      `cd ${refBackend} && ` +
+      `DB_HOST=${sharedDbHost} DB_PORT=${sharedDbPort} DB_USER=${dbUser} ` +
+      `DB_PASSWORD=${dbPass} DB_NAME=${dbName} DB_SOCKET="" ` +
+      `node database/setup-demo.js 2>&1`
+    );
+
     // Seed admin user + branch
     const bcrypt = require('bcryptjs');
     const defaultPassword = 'admin123';
@@ -453,6 +461,7 @@ init().catch(e => { console.error(e); process.exit(1); });
 `;
       run(`cat > ${backendDir}/init-db.js << 'INITSQLEOF'\n${initSQL}\nINITSQLEOF`);
       run(`docker run --rm --network ${networkName} -v ${backendDir}:/app node:18-alpine node /app/init-db.js 2>&1`);
+      run(`docker run --rm --network ${networkName} -e DB_HOST=${dbCName} -e DB_PORT=3306 -e DB_USER=${dbUser} -e DB_PASSWORD=${dbPass} -e DB_NAME=${dbName} -v ${backendDir}:/app node:18-alpine node /app/database/setup-demo.js 2>&1 || true`);
     });
 
     // ═══ 10. Start containers (backend, ui, admin) ═══
@@ -708,7 +717,7 @@ async function restartTenant(slug) {
 async function getTenantLogs(slug, lines = 100) {
   const [[tenant]] = await db.query('SELECT * FROM tenants WHERE slug = ?', [slug]);
   if (!tenant) throw new Error('Tenant not found');
-  if (tenant.backend_port) {
+  if (tenant.pricing_tier !== 'free') {
     try { return run(`docker logs --tail ${lines} ${slug}-backend 2>&1`); }
     catch (e) { return `Log error: ${e.message}`; }
   }
