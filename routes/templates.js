@@ -7,6 +7,7 @@ const { swapUiTemplate } = require('../services/provisioner');
 // GET /api/templates — public list, augmented with owned/active if auth provided
 router.get('/', async (req, res) => {
   try {
+    let isSuperadmin = false;
     let tenantId = null;
     const authHeader = req.headers.authorization;
     if (authHeader) {
@@ -14,12 +15,15 @@ router.get('/', async (req, res) => {
         const jwt = require('jsonwebtoken');
         const decoded = jwt.verify(authHeader.replace('Bearer ', ''), process.env.JWT_SECRET);
         if (decoded.tenantId) tenantId = decoded.tenantId;
+        if (decoded.role === 'superadmin') isSuperadmin = true;
       } catch (_) {}
     }
 
-    const [templates] = await db.query(
-      'SELECT id, slug, name, description, tier, price, image_tag, thumbnail_url, preview_url, preview_hue, tags, rating, review_count, sort_order FROM ui_templates WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
-    );
+    const query = isSuperadmin
+      ? 'SELECT id, slug, name, description, tier, price, image_tag, thumbnail_url, preview_url, preview_hue, tags, rating, review_count, sort_order, is_active FROM ui_templates ORDER BY sort_order ASC, id ASC'
+      : 'SELECT id, slug, name, description, tier, price, image_tag, thumbnail_url, preview_url, preview_hue, tags, rating, review_count, sort_order, is_active FROM ui_templates WHERE is_active = 1 ORDER BY sort_order ASC, id ASC';
+
+    const [templates] = await db.query(query);
 
     if (tenantId) {
       const [purchases] = await db.query(

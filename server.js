@@ -332,15 +332,17 @@ app.get('/api/tenant/:id/stats', tenantAuth, async (req, res) => {
     let tenantConn;
     try {
       const mysql = require('mysql2/promise');
+      const port = (tenant.pricing_tier === 'free' || !tenant.pricing_tier) ? parseInt(process.env.SHARED_DB_PORT || '3910') : 3306;
       tenantConn = await mysql.createConnection({
         host: '127.0.0.1',
+        port: port,
         user: (tenant.db_name || '').replace('cafe_', 'cafe_').substring(0, 16),
         password: process.env.TENANT_DB_PASS || tenant.db_pass || '',
         database: tenant.db_name,
         connectTimeout: 3000,
       });
     } catch (_) {
-      return res.json({ stats: { ...stats, error: 'DB not available' } });
+      return res.json({ ...stats, error: 'DB not available' });
     }
 
     try {
@@ -546,8 +548,24 @@ app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
 // Superadmin - Update tenant
 app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
-    const allowed = ['name', 'email', 'phone', 'status', 'pricing_tier', 'admin_email', 'admin_password', 'balance', 'auto_suspend', 'custom_domain', 'container_status'];
+    const allowed = ['name', 'email', 'phone', 'status', 'pricing_tier', 'admin_email', 'admin_password', 'balance', 'auto_suspend', 'custom_domain', 'container_status', 'active_template_id'];
     const updates = [], values = [];
+    
+    let templateChanged = false;
+    let newTemplateId = null;
+    if (req.body.active_template_id !== undefined) {
+      const [[currentTenant]] = await db.query('SELECT active_template_id FROM tenants WHERE id = ?', [req.params.id]);
+      if (currentTenant && currentTenant.active_template_id !== req.body.active_template_id) {
+        templateChanged = true;
+        newTemplateId = req.body.active_template_id;
+        const [[tpl]] = await db.query('SELECT image_tag FROM ui_templates WHERE id = ?', [newTemplateId]);
+        if (!tpl) return res.status(404).json({ error: 'Template tidak ditemukan' });
+        
+        // Ensure tenant owns the template (or superadmin can just assign it)
+        await db.query('INSERT IGNORE INTO tenant_templates (tenant_id, template_id) VALUES (?, ?)', [req.params.id, newTemplateId]);
+      }
+    }
+
     for (const field of allowed) {
       if (req.body[field] !== undefined) {
         if (field === 'admin_password') {
@@ -562,6 +580,16 @@ app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
     if (!updates.length) return res.status(400).json({ error: 'No fields to update' });
     values.push(req.params.id);
     await db.query(`UPDATE tenants SET ${updates.join(', ')}, updated_at=NOW() WHERE id = ?`, values);
+    
+    if (templateChanged) {
+      const [[tenant]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+      const [[tpl]] = await db.query('SELECT image_tag FROM ui_templates WHERE id = ?', [newTemplateId]);
+      if (tenant && tpl) {
+        const { swapUiTemplate } = require('./services/provisioner');
+        swapUiTemplate(tenant.slug, tpl.image_tag || 'cafe-ui:latest').catch(console.error);
+      }
+    }
+
     const [[updated]] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
     res.json({ success: true, tenant: updated });
   } catch (error) {

@@ -84,6 +84,41 @@ router.post('/superadmin/deprovision/:id', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/addons/superadmin/attach
+router.post('/superadmin/attach', superadminAuth, async (req, res) => {
+  try {
+    const { tenant_id, addon_id } = req.body;
+    if (!tenant_id || !addon_id) return res.status(400).json({ error: 'tenant_id dan addon_id wajib' });
+    
+    const [[addon]] = await db.query('SELECT * FROM addons WHERE id=?', [addon_id]);
+    if (!addon) return res.status(404).json({ error: 'Addon tidak ditemukan' });
+    
+    const [[existing]] = await db.query('SELECT id FROM tenant_addons WHERE tenant_id=? AND addon_id=?', [tenant_id, addon_id]);
+    if (existing) return res.status(400).json({ error: 'Addon sudah terpasang' });
+    
+    const r = await db.query('INSERT INTO tenant_addons (tenant_id, addon_id) VALUES (?,?)', [tenant_id, addon_id]);
+    const taId = r[0].insertId;
+    
+    if (addon.image) {
+      await provision(tenant_id, taId, addon).catch(e => console.error('[addon] auto-provision failed:', e.message));
+    }
+    res.status(201).json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/addons/superadmin/detach
+router.post('/superadmin/detach', superadminAuth, async (req, res) => {
+  try {
+    const { tenant_id, addon_id } = req.body;
+    const [[existing]] = await db.query('SELECT id FROM tenant_addons WHERE tenant_id=? AND addon_id=?', [tenant_id, addon_id]);
+    if (!existing) return res.status(404).json({ error: 'Addon tidak terpasang di tenant ini' });
+    
+    await deprovision(existing.id).catch(e => console.error('[addon] auto-deprovision failed:', e.message));
+    await db.query('DELETE FROM tenant_addons WHERE id=?', [existing.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── SUPERADMIN: tenant addon status ─────────────────────────
 
 // GET /api/addons/superadmin/tenants — all tenants with their addons
