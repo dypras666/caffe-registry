@@ -382,7 +382,51 @@ app.get('/api/tenant/:id/stats', tenantAuth, async (req, res) => {
   }
 });
 
-// GET /api/demo — public, returns the current demo tenant
+async function getTenantDbConnection(tenant) {
+  const mysql = require('mysql2/promise');
+  const sharedDbHost = process.env.SHARED_DB_HOST || '127.0.0.1';
+  const sharedDbPort = parseInt(process.env.SHARED_DB_PORT || '3910');
+
+  // 1. Try tenant user credentials on sharedDbPort
+  try {
+    return await mysql.createConnection({
+      host: sharedDbHost,
+      port: sharedDbPort,
+      user: tenant.db_user || (tenant.db_name || '').replace('cafe_', 'cafe_').substring(0, 16),
+      password: process.env.TENANT_DB_PASS || tenant.db_pass || '',
+      database: tenant.db_name,
+      connectTimeout: 4000,
+    });
+  } catch (_) {}
+
+  // 2. Try root on sharedDbPort
+  try {
+    return await mysql.createConnection({
+      host: sharedDbHost,
+      port: sharedDbPort,
+      user: 'root',
+      password: process.env.SHARED_DB_ROOT_PASS || process.env.DB_PASSWORD || '',
+      database: tenant.db_name,
+      connectTimeout: 4000,
+    });
+  } catch (_) {}
+
+  // 3. Try host 3306 root
+  try {
+    return await mysql.createConnection({
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: process.env.DB_PASSWORD || 'CafeAzzura2024',
+      database: tenant.db_name,
+      connectTimeout: 4000,
+    });
+  } catch (_) {}
+
+  return null;
+}
+
+// GET /api/demo — public, returns the current demo tenant with real verified accounts
 app.get('/api/demo', async (req, res) => {
   try {
     const [rows] = await db.query('SELECT * FROM tenants WHERE is_demo = 1 LIMIT 1');
@@ -393,6 +437,116 @@ app.get('/api/demo', async (req, res) => {
     t.app_domain = appDomain;
     t.ui_url = `https://${t.slug}.${appDomain}`;
     t.admin_url = `https://office-${t.slug}.${appDomain}`;
+
+    const demoPassword = process.env.DEMO_TENANT_PASSWORD || 'demo1234';
+    const bcrypt = require('bcryptjs');
+
+    const requiredRoles = [
+      {
+        role: 'Owner / Admin',
+        user_role: 'admin',
+        defaultEmail: `owner@${t.slug}.id`,
+        name: 'Owner Demo',
+        access: 'Full akses — dashboard, laporan, manajemen staf, pengaturan',
+        targetUrl: t.admin_url,
+      },
+      {
+        role: 'Kasir',
+        user_role: 'kasir',
+        defaultEmail: `kasir@${t.slug}.id`,
+        name: 'Kasir Demo',
+        access: 'POS transaksi, buka/tutup shift, riwayat order',
+        targetUrl: t.admin_url,
+      },
+      {
+        role: 'Waiter',
+        user_role: 'waiter',
+        defaultEmail: `waiter@${t.slug}.id`,
+        name: 'Waiter Demo',
+        access: 'Input order meja, cek status dapur, panggil kasir',
+        targetUrl: t.admin_url,
+      },
+      {
+        role: 'Member / Pelanggan',
+        user_role: 'member',
+        defaultEmail: `member@${t.slug}.id`,
+        name: 'Member Demo',
+        access: 'Self-order via QR, cek saldo & poin, riwayat pesanan',
+        targetUrl: t.ui_url,
+      }
+    ];
+
+    const verifiedAccounts = [];
+    let tenantConn = null;
+    try {
+      tenantConn = await getTenantDbConnection(t);
+    } catch (err) {
+      console.error('Could not connect to demo tenant DB:', err.message);
+    }
+
+    if (tenantConn) {
+      try {
+        const hash = await bcrypt.hash(demoPassword, 10);
+
+        for (const reqRole of requiredRoles) {
+          const [users] = await tenantConn.query(
+            'SELECT id, name, email, role, status FROM users WHERE email = ? OR role = ? ORDER BY (email = ?) DESC, id ASC LIMIT 1',
+            [reqRole.defaultEmail, reqRole.user_role, reqRole.defaultEmail]
+          );
+
+          let userEmail = reqRole.defaultEmail;
+          let userName = reqRole.name;
+
+          if (users.length > 0) {
+            userEmail = users[0].email;
+            userName = users[0].name || reqRole.name;
+            await tenantConn.query(
+              'UPDATE users SET password = ?, status = "active" WHERE id = ?',
+              [hash, users[0].id]
+            );
+          } else {
+            await tenantConn.query(
+              'INSERT INTO users (name, email, password, role, status) VALUES (?, ?, ?, ?, "active")',
+              [userName, userEmail, hash, reqRole.user_role]
+            );
+          }
+
+          const loginUrl = reqRole.user_role === 'member'
+            ? t.ui_url
+            : `${t.admin_url}/login?email=${encodeURIComponent(userEmail)}&password=${encodeURIComponent(demoPassword)}`;
+
+          verifiedAccounts.push({
+            role: reqRole.role,
+            user_role: reqRole.user_role,
+            name: userName,
+            email: userEmail,
+            password: demoPassword,
+            access: reqRole.access,
+            url: reqRole.targetUrl,
+            login_url: loginUrl,
+          });
+        }
+      } catch (dbErr) {
+        console.error('Error verifying demo accounts in tenant DB:', dbErr.message);
+      } finally {
+        await tenantConn.end();
+      }
+    }
+
+    if (verifiedAccounts.length > 0) {
+      t.accounts = verifiedAccounts;
+    } else {
+      t.accounts = requiredRoles.map(r => ({
+        role: r.role,
+        user_role: r.user_role,
+        name: r.name,
+        email: r.defaultEmail,
+        password: demoPassword,
+        access: r.access,
+        url: r.targetUrl,
+        login_url: r.user_role === 'member' ? t.ui_url : `${t.admin_url}/login?email=${encodeURIComponent(r.defaultEmail)}&password=${encodeURIComponent(demoPassword)}`,
+      }));
+    }
     
     res.json(t);
   } catch (error) {
@@ -523,7 +677,11 @@ app.post('/api/superadmin/login', authLimiter, async (req, res) => {
 app.get('/api/superadmin/tenants', superadminAuth, async (req, res) => {
   try {
     const [rows] = await db.query('SELECT * FROM tenants ORDER BY created_at DESC');
-    res.json({ tenants: rows });
+    const mapped = rows.map(t => ({
+      ...t,
+      is_demo: Boolean(t.is_demo)
+    }));
+    res.json({ tenants: mapped });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -539,6 +697,7 @@ app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
     t.app_domain = appDomain;
     t.cafe_url = `https://${t.slug}.${appDomain}`;
     t.admin_url_full = `https://office-${t.slug}.${appDomain}/admin`;
+    t.is_demo = Boolean(t.is_demo);
     res.json(t);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -605,43 +764,78 @@ app.put('/api/superadmin/tenants/:id/demo', superadminAuth, async (req, res) => 
     if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
 
     if (is_demo) {
-      // Unset any existing demo
-      await db.query('UPDATE tenants SET is_demo = FALSE');
-      
-      // Seed demo accounts into tenant DB
-      try {
-        const mysql = require('mysql2/promise');
-        const bcrypt = require('bcryptjs');
-        const tenantConn = await mysql.createConnection({
-          host: '127.0.0.1',
-          user: (tenant.db_name || '').replace('cafe_', 'cafe_').substring(0, 16),
-          password: process.env.TENANT_DB_PASS || tenant.db_pass || '',
-          database: tenant.db_name,
-          connectTimeout: 3000,
-        });
-        
-        const demoPass = await bcrypt.hash('demo1234', 10);
-        const roles = [
-          { role: 'admin', email: `owner@${tenant.slug}.id`, name: 'Owner Demo' },
-          { role: 'kasir', email: `kasir@${tenant.slug}.id`, name: 'Kasir Demo' },
-          { role: 'waiter', email: `waiter@${tenant.slug}.id`, name: 'Waiter Demo' },
-          { role: 'member', email: `member@${tenant.slug}.id`, name: 'Member Demo' }
-        ];
-
-        for (const r of roles) {
-          const [exists] = await tenantConn.query('SELECT id FROM users WHERE email = ?', [r.email]);
-          if (exists.length > 0) {
-            await tenantConn.query('UPDATE users SET password = ?, role = ? WHERE email = ?', [demoPass, r.role, r.email]);
-          } else {
-            await tenantConn.query('INSERT INTO users (name, email, password, role, status) VALUES (?, ?, ?, ?, "active")', [r.name, r.email, demoPass, r.role]);
+      // Find previously active demo tenant if any and unset in their DB
+      const [previousDemos] = await db.query('SELECT * FROM tenants WHERE is_demo = 1 AND id != ?', [tenant.id]);
+      for (const prev of previousDemos) {
+        try {
+          const prevConn = await getTenantDbConnection(prev);
+          if (prevConn) {
+            await prevConn.query("UPDATE system_settings SET setting_value = 'false' WHERE setting_key = 'is_demo_tenant'");
+            await prevConn.end();
           }
+        } catch (e) {
+          console.error(`Failed to unset demo setting on tenant ${prev.slug}:`, e.message);
         }
-        await tenantConn.end();
-      } catch (err) {
-        console.error('Failed to seed demo accounts:', err);
       }
+
+      // Unset any existing demo flag in registry
+      await db.query('UPDATE tenants SET is_demo = FALSE');
+
+      // Set demo setting and seed accounts in target tenant
+      try {
+        const tenantConn = await getTenantDbConnection(tenant);
+        if (tenantConn) {
+          await tenantConn.query(`
+            INSERT INTO system_settings (setting_key, setting_value, setting_type, setting_group, label, is_public)
+            VALUES ('is_demo_tenant', 'true', 'boolean', 'system', 'Demo Tenant Mode', 1)
+            ON DUPLICATE KEY UPDATE setting_value = 'true', is_public = 1
+          `);
+
+          const bcrypt = require('bcryptjs');
+          const demoPass = await bcrypt.hash('demo1234', 10);
+          const roles = [
+            { role: 'admin', email: `owner@${tenant.slug}.id`, name: 'Owner Demo' },
+            { role: 'kasir', email: `kasir@${tenant.slug}.id`, name: 'Kasir Demo' },
+            { role: 'waiter', email: `waiter@${tenant.slug}.id`, name: 'Waiter Demo' },
+            { role: 'member', email: `member@${tenant.slug}.id`, name: 'Member Demo' }
+          ];
+
+          for (const r of roles) {
+            const [exists] = await tenantConn.query('SELECT id FROM users WHERE email = ?', [r.email]);
+            if (exists.length > 0) {
+              await tenantConn.query('UPDATE users SET password = ?, role = ? WHERE email = ?', [demoPass, r.role, r.email]);
+            } else {
+              await tenantConn.query('INSERT INTO users (name, email, password, role, status) VALUES (?, ?, ?, ?, "active")', [r.name, r.email, demoPass, r.role]);
+            }
+          }
+          // Also ensure any existing admin user in tenant DB can log in with demo password
+          await tenantConn.query('UPDATE users SET password = ? WHERE role = "admin"', [demoPass]);
+          await tenantConn.end();
+        }
+      } catch (err) {
+        console.error('Failed to configure demo settings/accounts:', err);
+      }
+
+      // Sync registry tenant credentials to demo credentials
+      const demoEmail = `owner@${tenant.slug}.id`;
+      await db.query(
+        'UPDATE tenants SET is_demo = 1, admin_email = ?, container_password = ? WHERE id = ?',
+        [demoEmail, 'demo1234', req.params.id]
+      );
+    } else {
+      // Unsetting demo on this tenant
+      try {
+        const tenantConn = await getTenantDbConnection(tenant);
+        if (tenantConn) {
+          await tenantConn.query("UPDATE system_settings SET setting_value = 'false' WHERE setting_key = 'is_demo_tenant'");
+          await tenantConn.end();
+        }
+      } catch (err) {
+        console.error('Failed to disable demo setting on tenant:', err);
+      }
+      await db.query('UPDATE tenants SET is_demo = 0 WHERE id = ?', [req.params.id]);
     }
-    await db.query('UPDATE tenants SET is_demo = ? WHERE id = ?', [is_demo ? 1 : 0, req.params.id]);
+
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
