@@ -128,6 +128,16 @@ app.use('/', (req, res) => {
   const slug = req.tenantSlug;
   const config = req.tenantConfig;
 
+  // Direct serve local uploads if file exists on disk
+  if (req.originalUrl.startsWith('/uploads/')) {
+    const uploadFile = path.join(TENANTS_DIR, slug, 'backend', req.originalUrl.split('?')[0]);
+    if (fs.existsSync(uploadFile) && fs.statSync(uploadFile).isFile()) {
+      res.setHeader('Content-Type', getMimeType(uploadFile));
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      return res.sendFile(uploadFile);
+    }
+  }
+
   // API, Uploads & Media Proxy → proxy ke backend
   if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/uploads') || req.originalUrl.startsWith('/m/')) {
     if (!config.backend_port) return res.status(503).json({ error: 'Backend belum siap' });
