@@ -110,18 +110,7 @@ async function provisionFreeTenant(tenantId, slug, tenant) {
     });
     await conn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
     await conn.query(`CREATE USER IF NOT EXISTS '${dbUser}'@'%' IDENTIFIED BY '${dbPass}'`);
-    await conn.query(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${dbUser}'@'%'`);
-    await conn.query('FLUSH PRIVILEGES');
-    await conn.end();
-  });
-
-  // ═══ 1. Buat DB di shared MySQL ═══
-  await logProvisionTimed(tenantId, slug, 'shared.db.create', async () => {
-    const conn = await require('mysql2/promise').createConnection({
-      host: sharedDbHost, port: sharedDbPort, user: 'root', password: sharedDbRoot,
-    });
-    await conn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-    await conn.query(`CREATE USER IF NOT EXISTS '${dbUser}'@'%' IDENTIFIED BY '${dbPass}'`);
+    await conn.query(`ALTER USER '${dbUser}'@'%' IDENTIFIED BY '${dbPass}'`);
     await conn.query(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${dbUser}'@'%'`);
     await conn.query('FLUSH PRIVILEGES');
     await conn.end();

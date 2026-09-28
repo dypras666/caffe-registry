@@ -1275,18 +1275,57 @@ app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
     const bcrypt = require('bcryptjs');
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    const beCName = `${t.slug}-db`;
+    const mysql = require('mysql2/promise');
+    const sharedDbPort = parseInt(process.env.SHARED_DB_PORT || '3910');
+    const sharedDbHost = process.env.SHARED_DB_HOST || '127.0.0.1';
+    let dbUpdated = false;
 
-    // Use spawnSync (no shell) to avoid bash escaping issues with bcrypt $ signs
-    const { spawnSync } = require('child_process');
-    const sql = `UPDATE users SET password='${hashedPassword}' WHERE role='admin' LIMIT 1`;
-    const result = spawnSync('docker', ['exec', '-i', beCName, 'mysql', '-h', '127.0.0.1', '-u', t.db_user, `-p${t.db_pass}`, t.db_name], {
-      input: sql,
-      timeout: 15000,
-      encoding: 'utf8',
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`mysql exit ${result.status}: ${result.stderr}`);
+    // 1. Try direct connection to shared database (free / shared tenants)
+    try {
+      const conn = await mysql.createConnection({
+        host: sharedDbHost,
+        port: sharedDbPort,
+        user: t.db_user,
+        password: t.db_pass,
+        database: t.db_name,
+        connectTimeout: 4000,
+      });
+      await conn.query('UPDATE users SET password = ? WHERE role = "admin"', [hashedPassword]);
+      await conn.end();
+      dbUpdated = true;
+    } catch (_) {
+      // 2. Try root connection to shared-db if tenant user fails
+      try {
+        const conn = await mysql.createConnection({
+          host: sharedDbHost,
+          port: sharedDbPort,
+          user: 'root',
+          password: process.env.SHARED_DB_ROOT_PASS || process.env.DB_PASSWORD || '',
+          database: t.db_name,
+          connectTimeout: 4000,
+        });
+        await conn.query('UPDATE users SET password = ? WHERE role = "admin"', [hashedPassword]);
+        await conn.end();
+        dbUpdated = true;
+      } catch (_) {}
+    }
+
+    // 3. Fallback: isolated container ${t.slug}-db
+    if (!dbUpdated) {
+      const beCName = `${t.slug}-db`;
+      const { spawnSync } = require('child_process');
+      const sql = `UPDATE users SET password='${hashedPassword}' WHERE role='admin' LIMIT 1`;
+      const result = spawnSync('docker', ['exec', '-i', beCName, 'mysql', '-h', '127.0.0.1', '-u', t.db_user, `-p${t.db_pass}`, t.db_name], {
+        input: sql,
+        timeout: 15000,
+        encoding: 'utf8',
+      });
+      if (result.status === 0) {
+        dbUpdated = true;
+      } else {
+        throw new Error(`Gagal reset password: ${result.stderr || 'Container atau database tenant tidak dapat diakses'}`);
+      }
+    }
 
     await db.query(
       "UPDATE tenants SET container_password = ?, updated_at = NOW() WHERE id = ?",
