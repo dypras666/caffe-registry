@@ -2206,8 +2206,7 @@ app.delete('/api/superadmin/features/:id', superadminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-const multer = require('multer');
-const upload = multer({ dest: '/tmp/' });
+// Multer already defined globally
 app.post('/api/superadmin/features/upload-image', superadminAuth, upload.single('image'), async (req, res) => {
   try {
     // Basic image upload handler that just returns a placeholder or the base64 URL
