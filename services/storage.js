@@ -102,8 +102,23 @@ async function listFiles(namespace, prefix = '') {
 async function uploadBase64(namespace, filename, dataUri) {
   const matches = dataUri.match(/^data:([^;]+);base64,(.+)$/);
   if (!matches) throw new Error('Invalid base64 data URI');
-  const [, mime, b64] = matches;
-  const buffer = Buffer.from(b64, 'base64');
+  let [, mime, b64] = matches;
+  let buffer = Buffer.from(b64, 'base64');
+  
+  if (mime.startsWith('image/')) {
+    try {
+      const sharp = require('sharp');
+      buffer = await sharp(buffer)
+        .resize({ width: 1200, withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer();
+      mime = 'image/webp';
+      filename = filename.replace(/\.[^/.]+$/, "") + ".webp";
+    } catch (err) {
+      console.warn('Sharp compression failed, proceeding with original buffer', err);
+    }
+  }
+
   const result = await uploadFile(namespace, filename, buffer, mime);
   return result.url;
 }

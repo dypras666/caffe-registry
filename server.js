@@ -2209,13 +2209,11 @@ app.delete('/api/superadmin/features/:id', superadminAuth, async (req, res) => {
 // Multer already defined globally
 app.post('/api/superadmin/features/upload-image', superadminAuth, upload.single('image'), async (req, res) => {
   try {
-    // Basic image upload handler that just returns a placeholder or the base64 URL
-    // In a real app this would upload to S3. Since the frontend passes base64 in req.body.image:
     if (req.body.image) {
-      // Just echo it back if it's base64, or save it somewhere.
-      // But usually, it expects a real URL. Let's return the base64 string directly for simplicity.
-      // Wait, the frontend says: const res = await superadmin.features.uploadImage(dataUri, file.name);
-      return res.json({ url: req.body.image, key: req.body.filename });
+      const { uploadBase64 } = require('./services/storage');
+      const filename = req.body.filename || `feature-${Date.now()}.jpg`;
+      const url = await uploadBase64('features', filename, req.body.image);
+      return res.json({ url, key: filename });
     }
     res.status(400).json({ error: 'No image provided' });
   } catch (e) { res.status(500).json({ error: e.message }); }
