@@ -2159,6 +2159,69 @@ app.get('/api/superadmin/activity-log', superadminAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// ─── FEATURES API (LANDING & SUPERADMIN) ────────────────────────
+app.get('/api/features', async (req, res) => {
+  try {
+    const [features] = await db.query('SELECT * FROM landing_features ORDER BY sort_order ASC');
+    res.json({ features });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/superadmin/features', superadminAuth, async (req, res) => {
+  try {
+    const [features] = await db.query('SELECT * FROM landing_features ORDER BY sort_order ASC');
+    res.json({ features });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/superadmin/features', superadminAuth, async (req, res) => {
+  try {
+    const { title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active } = req.body;
+    let finalSlug = slug || title.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+    const imagesStr = Array.isArray(images) ? JSON.stringify(images) : '[]';
+    await db.query(`
+      INSERT INTO landing_features (title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [title, finalSlug, subtitle, description, icon, cover_image, imagesStr, video_url, video_embed, is_home ? 1 : 0, sort_order || 0, is_active ? 1 : 0]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/superadmin/features/:id', superadminAuth, async (req, res) => {
+  try {
+    const { title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active } = req.body;
+    const imagesStr = Array.isArray(images) ? JSON.stringify(images) : (images || '[]');
+    await db.query(`
+      UPDATE landing_features SET title=?, slug=?, subtitle=?, description=?, icon=?, cover_image=?, images=?, video_url=?, video_embed=?, is_home=?, sort_order=?, is_active=?
+      WHERE id=?
+    `, [title, slug, subtitle, description, icon, cover_image, imagesStr, video_url, video_embed, is_home ? 1 : 0, sort_order || 0, is_active ? 1 : 0, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/superadmin/features/:id', superadminAuth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM landing_features WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+const multer = require('multer');
+const upload = multer({ dest: '/tmp/' });
+app.post('/api/superadmin/features/upload-image', superadminAuth, upload.single('image'), async (req, res) => {
+  try {
+    // Basic image upload handler that just returns a placeholder or the base64 URL
+    // In a real app this would upload to S3. Since the frontend passes base64 in req.body.image:
+    if (req.body.image) {
+      // Just echo it back if it's base64, or save it somewhere.
+      // But usually, it expects a real URL. Let's return the base64 string directly for simplicity.
+      // Wait, the frontend says: const res = await superadmin.features.uploadImage(dataUri, file.name);
+      return res.json({ url: req.body.image, key: req.body.filename });
+    }
+    res.status(400).json({ error: 'No image provided' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'Route not found' });
