@@ -1212,6 +1212,7 @@ const addonsRouter = require('./routes/addons');
 const gojekRouter = require('./routes/gojek');
 const containersRouter = require('./routes/containers');
 const templatesRouter = require('./routes/templates');
+const integrationsRouter = require('./routes/integrations');
 const { startAutoScaler } = require('./services/autoscaler');
 const { sendWelcome, sendForgotPassword, sendLoginInfo } = require('./services/email');
 
@@ -1230,6 +1231,7 @@ app.use('/api/addons', addonsRouter);
 app.use('/api/addons/gojek', gojekRouter);
 app.use('/api/tenants', containersRouter);
 app.use('/api/templates', templatesRouter);
+app.use('/api/integrations', integrationsRouter);
 
 // ─── ACTIVITY LOG ──────────────────────────────────────────────
 // Ensures activity_logs table exists
@@ -2167,6 +2169,14 @@ app.get('/api/features', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/features/slug/:slug', async (req, res) => {
+  try {
+    const [[feature]] = await db.query('SELECT * FROM landing_features WHERE slug = ?', [req.params.slug]);
+    if (!feature) return res.status(404).json({ error: 'Not found' });
+    res.json({ feature });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/superadmin/features', superadminAuth, async (req, res) => {
   try {
     const [features] = await db.query('SELECT * FROM landing_features ORDER BY sort_order ASC');
@@ -2176,9 +2186,25 @@ app.get('/api/superadmin/features', superadminAuth, async (req, res) => {
 
 app.post('/api/superadmin/features', superadminAuth, async (req, res) => {
   try {
-    const { title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active } = req.body;
+    let { title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active } = req.body;
     let finalSlug = slug || title.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
-    const imagesStr = Array.isArray(images) ? JSON.stringify(images) : '[]';
+    if (cover_image && cover_image.startsWith('data:image/')) {
+      const { uploadBase64 } = require('./services/storage');
+      cover_image = await uploadBase64('features', `feature-${Date.now()}`, cover_image);
+    }
+    
+    let processedImages = [];
+    if (Array.isArray(images)) {
+      const { uploadBase64 } = require('./services/storage');
+      processedImages = await Promise.all(images.map(async (img, idx) => {
+        if (typeof img === 'string' && img.startsWith('data:image/')) {
+          return await uploadBase64('features', `feature-gallery-${Date.now()}-${idx}`, img);
+        }
+        return img;
+      }));
+    }
+    const imagesStr = JSON.stringify(processedImages);
+    
     await db.query(`
       INSERT INTO landing_features (title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2189,8 +2215,26 @@ app.post('/api/superadmin/features', superadminAuth, async (req, res) => {
 
 app.put('/api/superadmin/features/:id', superadminAuth, async (req, res) => {
   try {
-    const { title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active } = req.body;
-    const imagesStr = Array.isArray(images) ? JSON.stringify(images) : (images || '[]');
+    let { title, slug, subtitle, description, icon, cover_image, images, video_url, video_embed, is_home, sort_order, is_active } = req.body;
+    if (cover_image && cover_image.startsWith('data:image/')) {
+      const { uploadBase64 } = require('./services/storage');
+      cover_image = await uploadBase64('features', `feature-${Date.now()}`, cover_image);
+    }
+
+    let processedImages = [];
+    if (Array.isArray(images)) {
+      const { uploadBase64 } = require('./services/storage');
+      processedImages = await Promise.all(images.map(async (img, idx) => {
+        if (typeof img === 'string' && img.startsWith('data:image/')) {
+          return await uploadBase64('features', `feature-gallery-${Date.now()}-${idx}`, img);
+        }
+        return img;
+      }));
+    } else if (typeof images === 'string') {
+      try { processedImages = JSON.parse(images); } catch(e) {}
+    }
+    const imagesStr = JSON.stringify(processedImages);
+
     await db.query(`
       UPDATE landing_features SET title=?, slug=?, subtitle=?, description=?, icon=?, cover_image=?, images=?, video_url=?, video_embed=?, is_home=?, sort_order=?, is_active=?
       WHERE id=?
