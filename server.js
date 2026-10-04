@@ -9,7 +9,7 @@ const rateLimit = require('express-rate-limit');
 const db = require('./config/database');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const { provisionTenant, upgradeFromFree, checkAvailability, restartTenant } = require('./services/provisioner');
+const { provisionTenant, upgradeFromFree, checkAvailability, restartTenant, stopTenant } = require('./services/provisioner');
 const nodemailer = require('nodemailer');
 const { superadminAuth } = require('./services/auth');
 // Queue must be required early so all routes can use it
@@ -687,6 +687,94 @@ app.get('/api/superadmin/tenants', superadminAuth, async (req, res) => {
   }
 });
 
+// Superadmin - Create new tenant
+app.post('/api/superadmin/tenants', superadminAuth, async (req, res) => {
+  try {
+    const { name, slug, email, password, phone, pricing_tier, balance, template_id, auto_suspend, container_status } = req.body;
+
+    if (!name || !slug || !email) {
+      return res.status(400).json({ error: 'Nama cafe, subdomain (slug), dan email wajib diisi' });
+    }
+
+    const cleanSlug = String(slug).toLowerCase().trim();
+    if (!/^[a-z0-9-]+$/.test(cleanSlug)) {
+      return res.status(400).json({ error: 'Slug hanya boleh huruf kecil, angka, dan tanda hubung (-)' });
+    }
+
+    const avail = await checkAvailability(cleanSlug);
+    if (!avail.available) {
+      return res.status(400).json({ error: avail.error || 'Slug sudah digunakan oleh tenant lain' });
+    }
+
+    const tenantPassword = (password && password.trim()) ? password.trim() : 'admin123';
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = await bcrypt.hash(tenantPassword, 10);
+
+    const tier = pricing_tier || 'free';
+    const [plans] = await db.query("SELECT * FROM pricing_plans WHERE tier = ?", [tier]);
+    const plan = plans.length ? plans[0] : { ram_mb: 256, cpu_cores: 0.5, disk_mb: 2048 };
+
+    let resolvedTemplateId = null;
+    if (template_id) {
+      const [[tpl]] = await db.query("SELECT id FROM ui_templates WHERE id = ?", [parseInt(template_id)]);
+      if (tpl) resolvedTemplateId = tpl.id;
+    }
+
+    const initialBalance = parseFloat(balance) || 0;
+    const shouldAutoSuspend = auto_suspend !== undefined ? (auto_suspend ? 1 : 0) : 1;
+
+    const [result] = await db.query(
+      `INSERT INTO tenants (
+        name, slug, email, phone, status, pricing_tier, balance,
+        ram_mb, cpu_cores, disk_mb, admin_email, admin_password,
+        container_password, active_template_id, auto_suspend,
+        container_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        name.trim(),
+        cleanSlug,
+        email.trim(),
+        phone ? phone.trim() : null,
+        tier,
+        initialBalance,
+        plan.ram_mb || 256,
+        plan.cpu_cores || 0.5,
+        plan.disk_mb || 2048,
+        email.trim(),
+        hashedPassword,
+        tenantPassword,
+        resolvedTemplateId,
+        shouldAutoSuspend,
+        container_status || (tier === 'free' ? 'shared' : 'pending')
+      ]
+    );
+
+    const tenantId = result.insertId;
+
+    if (resolvedTemplateId) {
+      await db.query(
+        'INSERT IGNORE INTO tenant_templates (tenant_id, template_id) VALUES (?, ?)',
+        [tenantId, resolvedTemplateId]
+      ).catch(() => {});
+    }
+
+    // Trigger provisioning asynchronously
+    provisionTenant(tenantId, cleanSlug, email.trim(), tenantPassword).catch(err => {
+      console.error(`[Provision] Failed to provision tenant ${cleanSlug}:`, err);
+    });
+
+    const [[created]] = await db.query('SELECT * FROM tenants WHERE id = ?', [tenantId]);
+    res.json({
+      success: true,
+      message: `Tenant ${cleanSlug} berhasil dibuat dan dalam proses provisioning`,
+      tenant: created,
+      defaultPassword: tenantPassword
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Superadmin - Get tenant details
 app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
@@ -699,6 +787,48 @@ app.get('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
     t.admin_url_full = `https://office-${t.slug}.${appDomain}/admin`;
     t.is_demo = Boolean(t.is_demo);
     res.json(t);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Superadmin - Suspend tenant
+app.post('/api/superadmin/tenants/:id/suspend', superadminAuth, async (req, res) => {
+  try {
+    const [[tenant]] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
+    if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+
+    try {
+      await stopTenant(tenant.slug);
+    } catch (e) {
+      console.log(`[Superadmin] Suspend stopTenant warning for ${tenant.slug}:`, e.message);
+    }
+
+    await db.query("UPDATE tenants SET status = 'suspended', container_status = 'stopped', suspended_at = NOW(), updated_at = NOW() WHERE id = ?", [tenant.id]);
+
+    const [[updated]] = await db.query('SELECT * FROM tenants WHERE id = ?', [tenant.id]);
+    res.json({ success: true, message: `Tenant ${tenant.name || tenant.slug} berhasil di-suspend`, tenant: updated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Superadmin - Unsuspend / Activate tenant
+app.post('/api/superadmin/tenants/:id/unsuspend', superadminAuth, async (req, res) => {
+  try {
+    const [[tenant]] = await db.query('SELECT * FROM tenants WHERE id = ?', [req.params.id]);
+    if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+
+    await db.query("UPDATE tenants SET status = 'active', container_status = 'running', suspended_at = NULL, updated_at = NOW() WHERE id = ?", [tenant.id]);
+
+    try {
+      await restartTenant(tenant.slug);
+    } catch (e) {
+      console.log(`[Superadmin] Unsuspend restartTenant warning for ${tenant.slug}:`, e.message);
+    }
+
+    const [[updated]] = await db.query('SELECT * FROM tenants WHERE id = ?', [tenant.id]);
+    res.json({ success: true, message: `Tenant ${tenant.name || tenant.slug} berhasil diaktifkan kembali`, tenant: updated });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -730,6 +860,18 @@ app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
         if (field === 'admin_password') {
           updates.push(`${field} = ?`);
           values.push(require('bcryptjs').hashSync(req.body[field], 10));
+          updates.push(`container_password = ?`);
+          values.push(req.body[field]);
+        } else if (field === 'status') {
+          updates.push(`status = ?`);
+          values.push(req.body[field]);
+          if (req.body[field] === 'suspended') {
+            updates.push(`suspended_at = NOW()`);
+            updates.push(`container_status = 'stopped'`);
+          } else if (req.body[field] === 'active') {
+            updates.push(`suspended_at = NULL`);
+            updates.push(`container_status = 'running'`);
+          }
         } else {
           updates.push(`${field} = ?`);
           values.push(req.body[field]);
@@ -740,6 +882,18 @@ app.put('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
     values.push(req.params.id);
     await db.query(`UPDATE tenants SET ${updates.join(', ')}, updated_at=NOW() WHERE id = ?`, values);
     
+    if (req.body.status === 'suspended') {
+      const [[tenant]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+      if (tenant) {
+        try { await stopTenant(tenant.slug); } catch (_) {}
+      }
+    } else if (req.body.status === 'active') {
+      const [[tenant]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
+      if (tenant) {
+        try { await restartTenant(tenant.slug); } catch (_) {}
+      }
+    }
+
     if (templateChanged) {
       const [[tenant]] = await db.query('SELECT slug FROM tenants WHERE id = ?', [req.params.id]);
       const [[tpl]] = await db.query('SELECT image_tag FROM ui_templates WHERE id = ?', [newTemplateId]);
@@ -842,16 +996,36 @@ app.put('/api/superadmin/tenants/:id/demo', superadminAuth, async (req, res) => 
   }
 });
 
-// Superadmin - Delete tenant (blocked if active)
+// Superadmin - Delete tenant
 app.delete('/api/superadmin/tenants/:id', superadminAuth, async (req, res) => {
   try {
-    const [[tenant]] = await db.query('SELECT id, slug, status FROM tenants WHERE id = ?', [req.params.id]);
+    const [[tenant]] = await db.query('SELECT id, slug, status, backend_port, db_name FROM tenants WHERE id = ?', [req.params.id]);
     if (!tenant) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
-    if (tenant.status === 'active') {
-      return res.status(400).json({ error: 'Tidak bisa hapus tenant yang masih aktif. Suspend atau nonaktifkan dulu.' });
+
+    const force = req.query.force === 'true' || req.body?.force === true;
+    if (tenant.status === 'active' && !force) {
+      return res.status(400).json({ error: 'Tenant masih aktif. Suspend terlebih dahulu atau gunakan konfirmasi hapus permanen.' });
     }
-    await db.query('DELETE FROM tenants WHERE id = ?', [req.params.id]);
-    res.json({ success: true, message: `Tenant ${tenant.slug} dihapus` });
+
+    // Stop and remove docker containers if any
+    try {
+      const { run } = require('./services/provisioner');
+      run(`docker stop ${tenant.slug}-backend ${tenant.slug}-ui ${tenant.slug}-admin 2>/dev/null || true`);
+      run(`docker rm -f ${tenant.slug}-backend ${tenant.slug}-ui ${tenant.slug}-admin 2>/dev/null || true`);
+    } catch (_) {}
+
+    // Clean up referencing rows
+    await db.query('DELETE FROM tenant_templates WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+    await db.query('DELETE FROM tenant_addons WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+    await db.query('DELETE FROM tenant_env_vars WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+    await db.query('DELETE FROM topup_transactions WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+    await db.query('DELETE FROM topup_requests WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+    await db.query('DELETE FROM gojek_orders WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+    await db.query('DELETE FROM gojek_configs WHERE tenant_id = ?', [tenant.id]).catch(() => {});
+
+    await db.query('DELETE FROM tenants WHERE id = ?', [tenant.id]);
+
+    res.json({ success: true, message: `Tenant ${tenant.slug} berhasil dihapus permanen` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

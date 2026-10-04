@@ -42,7 +42,7 @@ async function init() {
       slug VARCHAR(100) UNIQUE NOT NULL,
       email VARCHAR(255),
       phone VARCHAR(50),
-      status ENUM('pending','provisioning','active','inactive','failed') DEFAULT 'pending',
+      status ENUM('pending','provisioning','active','inactive','failed','suspended') DEFAULT 'pending',
       pricing_tier ENUM('free','starter','business','enterprise') DEFAULT 'free',
       ram_mb INT DEFAULT 64,
       cpu_cores DECIMAL(3,1) DEFAULT 0.25,

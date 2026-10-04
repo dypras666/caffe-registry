@@ -878,7 +878,8 @@ app.get('/api/shifts/:id/report', authenticate, async (req, res) => {
 app.post('/api/branches', authenticate, async (req, res) => {
   try {
     const { name, code, address, phone, email, city, is_active, is_main } = req.body;
-    const [r] = await req.db.query('INSERT INTO branches (name, code, address, phone, email, city, is_active, is_main) VALUES (?,?,?,?,?,?,?,?)', [name, code||name.substring(0,10).toUpperCase(), address||null, phone||null, email||null, city||null, is_active?1:1, is_main?1:0]);
+    const finalCode = code || name.substring(0,10).toUpperCase();
+    const [r] = await req.db.query('INSERT INTO branches (name, code, address, phone, email, city, is_active, is_main) VALUES (?,?,?,?,?,?,?,?)', [name, finalCode, address||null, phone||null, email||null, city||null, is_active?1:1, is_main?1:0]);
     res.status(201).json({ success: true, id: r.insertId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

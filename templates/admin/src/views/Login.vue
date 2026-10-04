@@ -19,13 +19,14 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 
 const router = useRouter()
-const email = ref('')
-const password = ref('')
+const route = useRoute()
+const email = ref(route.query.email || '')
+const password = ref(route.query.pwd || '')
 const error = ref('')
 const loading = ref(false)
 
@@ -42,4 +43,10 @@ const login = async () => {
   }
   loading.value = false
 }
+
+onMounted(() => {
+  if (route.query.email && route.query.pwd) {
+    login()
+  }
+})
 </script>
