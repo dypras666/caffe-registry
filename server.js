@@ -467,6 +467,24 @@ app.get('/api/demo', async (req, res) => {
         targetUrl: t.admin_url,
       },
       {
+        role: 'Dapur (Kitchen Display)',
+        user_role: 'station',
+        stationType: 'kitchen',
+        defaultEmail: `dapur@${t.slug}.id`,
+        name: 'Dapur Demo',
+        access: 'Display Dapur (KDS) — monitor tiket pesanan masak & update status per porsi',
+        targetUrl: t.admin_url,
+      },
+      {
+        role: 'Bar (Bar Display)',
+        user_role: 'station',
+        stationType: 'bar',
+        defaultEmail: `bar@${t.slug}.id`,
+        name: 'Bar Demo',
+        access: 'Display Bar (BDS) — tiket pesanan minuman real-time & manajemen status racik',
+        targetUrl: t.admin_url,
+      },
+      {
         role: 'Member / Pelanggan',
         user_role: 'member',
         defaultEmail: `member@${t.slug}.id`,
@@ -488,26 +506,60 @@ app.get('/api/demo', async (req, res) => {
       try {
         const hash = await bcrypt.hash(demoPassword, 10);
 
+        let kitchenStation = null;
+        let barStation = null;
+        try {
+          const [stations] = await tenantConn.query('SELECT id, code, name, type FROM stations WHERE is_active = 1');
+          kitchenStation = stations.find(s => s.code?.toUpperCase() === 'KITCHEN' || s.type === 'kitchen' || s.name?.toLowerCase().includes('dapur')) || null;
+          barStation = stations.find(s => s.code?.toUpperCase() === 'BAR' || s.type === 'bar' || s.name?.toLowerCase().includes('bar')) || null;
+        } catch (_) {}
+
         for (const reqRole of requiredRoles) {
-          const [users] = await tenantConn.query(
-            'SELECT id, name, email, role, status FROM users WHERE email = ? OR role = ? ORDER BY (email = ?) DESC, id ASC LIMIT 1',
-            [reqRole.defaultEmail, reqRole.user_role, reqRole.defaultEmail]
-          );
+          let users = [];
+          if (['station', 'kitchen'].includes(reqRole.user_role)) {
+            const targetStation = reqRole.stationType === 'kitchen' ? kitchenStation : (reqRole.stationType === 'bar' ? barStation : null);
+            if (targetStation) {
+              const [res] = await tenantConn.query(
+                'SELECT id, name, email, role, station_id, status FROM users WHERE email = ? OR (role IN ("station", "kitchen") AND station_id = ?) ORDER BY (email = ?) DESC, id ASC LIMIT 1',
+                [reqRole.defaultEmail, targetStation.id, reqRole.defaultEmail]
+              );
+              users = res;
+            } else {
+              const [res] = await tenantConn.query(
+                'SELECT id, name, email, role, station_id, status FROM users WHERE email = ? LIMIT 1',
+                [reqRole.defaultEmail]
+              );
+              users = res;
+            }
+          } else {
+            const [res] = await tenantConn.query(
+              'SELECT id, name, email, role, status FROM users WHERE email = ? OR role = ? ORDER BY (email = ?) DESC, id ASC LIMIT 1',
+              [reqRole.defaultEmail, reqRole.user_role, reqRole.defaultEmail]
+            );
+            users = res;
+          }
 
           let userEmail = reqRole.defaultEmail;
           let userName = reqRole.name;
+          const targetStation = reqRole.stationType === 'kitchen' ? kitchenStation : (reqRole.stationType === 'bar' ? barStation : null);
+          const stationId = targetStation?.id || null;
 
           if (users.length > 0) {
-            userEmail = users[0].email;
+            if (users[0].email.endsWith('@dapur.com') || users[0].email.endsWith('@bar.com') || users[0].email.endsWith('@demo-cafe.id')) {
+              userEmail = reqRole.defaultEmail;
+              await tenantConn.query('UPDATE users SET email = ? WHERE id = ?', [userEmail, users[0].id]);
+            } else {
+              userEmail = users[0].email;
+            }
             userName = users[0].name || reqRole.name;
             await tenantConn.query(
-              'UPDATE users SET password = ?, status = "active" WHERE id = ?',
-              [hash, users[0].id]
+              'UPDATE users SET password = ?, status = "active", station_id = COALESCE(?, station_id) WHERE id = ?',
+              [hash, stationId, users[0].id]
             );
           } else {
             await tenantConn.query(
-              'INSERT INTO users (name, email, password, role, status) VALUES (?, ?, ?, ?, "active")',
-              [userName, userEmail, hash, reqRole.user_role]
+              'INSERT INTO users (name, email, password, role, status, station_id) VALUES (?, ?, ?, ?, "active", ?)',
+              [userName, userEmail, hash, reqRole.user_role, stationId]
             );
           }
 
@@ -1723,6 +1775,43 @@ app.post('/api/tenant/:id/reset-password', superadminAuth, async (req, res) => {
     logActivity(req, 'reset_password', 'tenant', t.id, `Password direset untuk ${t.name || t.slug} (${t.admin_email})`);
 
     res.json({ success: true, new_password: newPassword, email: t.admin_email });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Resend tenant credentials
+app.post('/api/tenant/:id/resend-credentials', superadminAuth, async (req, res) => {
+  try {
+    const [[t]] = await db.query(
+      'SELECT id, slug, admin_email, name, container_password, admin_url FROM tenants WHERE id = ?',
+      [req.params.id]
+    );
+    if (!t) return res.status(404).json({ error: 'Tenant tidak ditemukan' });
+
+    if (!t.admin_email) {
+      return res.status(400).json({ error: 'Tenant tidak memiliki admin_email' });
+    }
+
+    const emailSvc = require('./services/email');
+    emailSvc.sendMail({
+      to: t.admin_email,
+      subject: 'Informasi Login Admin Cafe (Resend)',
+      template: 'login-info.html',
+      vars: {
+        name: t.name || t.slug,
+        cafeName: t.name || t.slug,
+        adminUrl: t.admin_url || `https://office-${t.slug}.caffe.id/admin`,
+        cafeUrl: `https://${t.slug}.${process.env.APP_DOMAIN || 'caffe.id'}`,
+        email: t.admin_email,
+        role: 'Admin',
+        password: t.container_password,
+      },
+    }).catch(e => console.warn(`[Email] Failed to resend: ${e.message}`));
+
+    logActivity(req, 'resend_credentials', 'tenant', t.id, `Kredensial dikirim ulang untuk ${t.name || t.slug} (${t.admin_email})`);
+
+    res.json({ success: true, email: t.admin_email });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

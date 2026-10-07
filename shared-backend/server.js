@@ -224,6 +224,52 @@ app.get('/api/orders/cancel-requests', authenticate, async (req, res) => {
   } catch { res.json({ requests: [] }); }
 });
 
+// GET /api/orders/public/:orderNumber — public digital receipt
+app.get('/api/orders/public/:orderNumber', async (req, res) => {
+  try {
+    const [[order]] = await req.db.query(
+      `SELECT o.*, t.number AS table_number, t.name AS table_name, u.name AS served_by_name
+       FROM orders o
+       LEFT JOIN tables t ON t.id = o.table_id
+       LEFT JOIN users u ON u.id = o.served_by
+       WHERE o.order_number = ?`,
+      [req.params.orderNumber]
+    );
+    if (!order) return res.status(404).json({ error: 'Nota pesanan tidak ditemukan' });
+    const [items] = await req.db.query('SELECT * FROM order_items WHERE order_id = ? ORDER BY id', [order.id]);
+    const [settingsRows] = await req.db.query(
+      'SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ("cafe_name", "site_name", "contact_address", "cafe_address", "contact_phone", "currency_symbol")'
+    ).catch(() => [[]]);
+    const settingsMap = (settingsRows || []).reduce((acc, s) => ({ ...acc, [s.setting_key]: s.setting_value }), {});
+
+    let shopName = settingsMap.cafe_name || settingsMap.site_name || '';
+    let address = settingsMap.cafe_address || settingsMap.contact_address || '';
+    let phone = settingsMap.contact_phone || '';
+
+    if (order.branch_id) {
+      const [[branch]] = await req.db.query('SELECT name, address, phone FROM branches WHERE id = ?', [order.branch_id]).catch(() => [[null]]);
+      if (branch) {
+        if (branch.name) shopName = branch.name;
+        if (branch.address) address = branch.address;
+        if (branch.phone) phone = branch.phone;
+      }
+    }
+
+    res.json({
+      order,
+      items,
+      shop: {
+        name: shopName || 'Café',
+        address,
+        phone,
+        currency: settingsMap.currency_symbol || 'Rp',
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/orders/:id', authenticate, async (req, res) => {
   try {
     const [[order]] = await req.db.query('SELECT o.*, t.number as table_number FROM orders o LEFT JOIN `tables` t ON o.table_id=t.id WHERE o.id=?', [req.params.id]);
@@ -782,6 +828,150 @@ app.put('/api/printers/:id', authenticate, async (req, res) => {
 app.delete('/api/printers/:id', authenticate, async (req, res) => {
   try { await req.db.query('DELETE FROM printers WHERE id=?', [req.params.id]); res.json({ success: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/printers/receipt/:orderId
+app.get('/api/printers/receipt/:orderId', authenticate, async (req, res) => {
+  try {
+    const [[order]] = await req.db.query(
+      `SELECT o.*, t.name AS table_name, u.name AS served_by_name
+       FROM orders o
+       LEFT JOIN \`tables\` t ON t.id = o.table_id
+       LEFT JOIN users u ON u.id = o.served_by
+       WHERE o.id = ?`, [req.params.orderId]
+    );
+    if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
+    const [items] = await req.db.query('SELECT * FROM order_items WHERE order_id = ?', [req.params.orderId]);
+    const [settingsRows] = await req.db.query(
+      'SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ("cafe_name", "site_name", "contact_address", "cafe_address", "contact_phone", "currency_symbol")'
+    ).catch(() => [[]]);
+    const settingsMap = (settingsRows || []).reduce((acc, s) => ({ ...acc, [s.setting_key]: s.setting_value }), {});
+
+    let shopName = settingsMap.cafe_name || settingsMap.site_name || '';
+    let address = settingsMap.cafe_address || settingsMap.contact_address || '';
+    let phone = settingsMap.contact_phone || '';
+
+    if (order.branch_id) {
+      const [[branch]] = await req.db.query('SELECT name, address, phone FROM branches WHERE id = ?', [order.branch_id]).catch(() => [[null]]);
+      if (branch) {
+        if (branch.name) shopName = branch.name;
+        if (branch.address) address = branch.address;
+        if (branch.phone) phone = branch.phone;
+      }
+    }
+
+    const [[defaultPrinter]] = await req.db.query('SELECT * FROM printers WHERE type="receipt" AND is_default=1 AND is_active=1 LIMIT 1').catch(() => [[null]]);
+
+    res.json({
+      printer: defaultPrinter,
+      receipt: {
+        shop_name: shopName || 'Café',
+        address,
+        phone,
+        currency: settingsMap.currency_symbol || 'Rp',
+        order,
+        items,
+      }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/printers/kitchen/:orderId
+app.get('/api/printers/kitchen/:orderId', authenticate, async (req, res) => {
+  try {
+    const [[order]] = await req.db.query(
+      `SELECT o.order_number, o.table_number, o.order_type, o.notes, o.created_at, t.name AS table_name
+       FROM orders o LEFT JOIN \`tables\` t ON t.id = o.table_id WHERE o.id = ?`,
+      [req.params.orderId]
+    );
+    if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
+    const [items] = await req.db.query('SELECT * FROM order_items WHERE order_id = ? ORDER BY id', [req.params.orderId]);
+    const [[printer]] = await req.db.query('SELECT * FROM printers WHERE type="kitchen" AND is_active=1 ORDER BY is_default DESC, sort_order LIMIT 1').catch(() => [[null]]);
+    res.json({ ticket: { order, items }, printer, order });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/printers/label/:orderId
+app.get('/api/printers/label/:orderId', authenticate, async (req, res) => {
+  try {
+    const [[order]] = await req.db.query(
+      `SELECT o.*, t.name AS table_name, u.name AS served_by_name
+       FROM orders o
+       LEFT JOIN \`tables\` t ON t.id = o.table_id
+       LEFT JOIN users u ON u.id = o.served_by
+       WHERE o.id = ?`, [req.params.orderId]
+    );
+    if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
+
+    let queryItems = 'SELECT * FROM order_items WHERE order_id = ?';
+    const params = [req.params.orderId];
+    if (req.query.item_id) {
+      queryItems += ' AND id = ?';
+      params.push(req.query.item_id);
+    }
+    const [rawItems] = await req.db.query(queryItems, params);
+
+    let [[labelPrinter]] = await req.db.query('SELECT * FROM printers WHERE type="label" AND is_default=1 AND is_active=1 LIMIT 1').catch(() => [[null]]);
+    if (!labelPrinter) {
+      [[labelPrinter]] = await req.db.query('SELECT * FROM printers WHERE type="label" AND is_active=1 ORDER BY sort_order LIMIT 1').catch(() => [[null]]);
+    }
+    if (!labelPrinter) {
+      [[labelPrinter]] = await req.db.query('SELECT * FROM printers WHERE type="receipt" AND is_default=1 AND is_active=1 LIMIT 1').catch(() => [[null]]);
+    }
+
+    const labels = [];
+    let totalCups = 0;
+    for (const it of rawItems) totalCups += (parseInt(it.quantity) || 1);
+
+    let currentIndex = 1;
+    for (const it of rawItems) {
+      const qty = parseInt(it.quantity) || 1;
+      const variants = it.variants_selected ? (typeof it.variants_selected === 'string' ? JSON.parse(it.variants_selected) : it.variants_selected) : [];
+      const addons = it.addons_selected ? (typeof it.addons_selected === 'string' ? JSON.parse(it.addons_selected) : it.addons_selected) : [];
+
+      for (let q = 1; q <= qty; q++) {
+        labels.push({
+          item_id: it.id,
+          product_name: it.product_name,
+          unit_index: q,
+          unit_total: qty,
+          label_number: currentIndex++,
+          label_total: totalCups,
+          variants,
+          addons,
+          notes: it.notes || '',
+          price: it.unit_price || it.product_price || 0,
+        });
+      }
+    }
+
+    const [settingsRows] = await req.db.query(
+      'SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ("cafe_name", "site_name", "currency_symbol")'
+    ).catch(() => [[]]);
+    const settingsMap = (settingsRows || []).reduce((acc, s) => ({ ...acc, [s.setting_key]: s.setting_value }), {});
+
+    let shopName = settingsMap.cafe_name || settingsMap.site_name || '';
+    if (order.branch_id) {
+      const [[branch]] = await req.db.query('SELECT name FROM branches WHERE id = ?', [order.branch_id]).catch(() => [[null]]);
+      if (branch?.name) shopName = branch.name;
+    }
+    const currency = settingsMap.currency_symbol || 'Rp';
+
+    const payload = {
+      shop_name: shopName || 'Café',
+      currency,
+      order,
+      items: labels,
+      raw_items: rawItems,
+      total_labels: totalCups,
+    };
+
+    res.json({
+      printer: labelPrinter,
+      labelData: payload,
+      label_data: payload,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Stations CRUD
